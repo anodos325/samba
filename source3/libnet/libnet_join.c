@@ -531,7 +531,7 @@ static ADS_STATUS libnet_join_set_machine_spn(TALLOC_CTX *mem_ctx,
 	}
 
 	netbios_aliases = lp_netbios_aliases();
-	if (netbios_aliases != NULL) {
+	if (netbios_aliases != NULL && lp_winbind_netbios_alias_spn()) {
 		for (; *netbios_aliases != NULL; netbios_aliases++) {
 			/*
 			 * Add HOST/NETBIOSNAME
