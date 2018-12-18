@@ -90,7 +90,14 @@ def getdosinfo(lp, file):
     return ndr_unpack(xattr.DOSATTRIB, attribute)
 
 def getntacl(lp, file, backend=None, eadbfile=None, direct_db_access=True, service=None):
-    if direct_db_access:
+    """
+    _PC_ACL_NFS4 is defined as 64 in unistd.h on FreeBSD.
+    In order for this to function properly, appropriate vfs objects need to be loaded
+    for the service in question.
+    """
+    PC_ACL_NFS4 = 64
+    has_nfs4_acls = os.pathconf(file, PC_ACL_NFS4)
+    if not has_nfs4_acls and direct_db_access:
         (backend_obj, dbname) = checkset_backend(lp, backend, eadbfile)
         if dbname is not None:
             try:

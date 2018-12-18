@@ -387,6 +387,18 @@ static SMB_ACL_T make_simple_acl(TALLOC_CTX *mem_ctx,
 	return acl;
 }
 
+static SMB_ACL_T make_simple_nfsv4_acl(gid_t gid, mode_t chmod_mode)
+{
+	/*
+	 * This function needs to create an NFSv4 ACL. Currently, the only way
+	 * to do so is to use the operating system interface, or to use the
+	 * functions in source3/modules/nfs4_acls.c. These seems ugly and
+	 * hacky. NFSv4 ACL's should be a first class citizen and
+	 * librpc/idl/smb_acl.idl should be modified accordingly.
+	 */
+	return NULL;
+}
+
 /*
   set a simple ACL on a file, as a test
  */
@@ -410,7 +422,7 @@ static PyObject *py_smbd_set_simple_acl(PyObject *self, PyObject *args, PyObject
 	acl = make_simple_acl(frame, gid, mode);
 	if (acl == NULL) {
 		TALLOC_FREE(frame);
-		return NULL;
+		Py_RETURN_NONE;
 	}
 
 	conn = get_conn_tos(service, NULL);
@@ -429,6 +441,113 @@ static PyObject *py_smbd_set_simple_acl(PyObject *self, PyObject *args, PyObject
 
 	TALLOC_FREE(frame);
 
+	Py_RETURN_NONE;
+}
+
+/*
+  set a simple NFSv4 ACL on a file, as a test
+ */
+static PyObject *py_smbd_set_simple_nfsv4_acl(PyObject *self, PyObject *args, PyObject *kwargs)
+{
+	const char * const kwnames[] = { "fname", "mode", "gid", "service", NULL };
+	char *fname, *service = NULL;
+	int ret;
+	int mode, gid = -1;
+	SMB_ACL_T acl;
+	TALLOC_CTX *frame;
+	connection_struct *conn;
+ 	if (!PyArg_ParseTupleAndKeywords(args, kwargs, "si|iz",
+					 discard_const_p(char *, kwnames),
+					 &fname, &mode, &gid, &service))
+		return NULL;
+
+ 	frame = talloc_stackframe();
+
+ 	acl = make_simple_nfsv4_acl(gid, mode);
+ 	frame = talloc_stackframe();
+ 	conn = get_conn_tos(service, NULL);
+	if (!conn) {
+		TALLOC_FREE(frame);
+		return NULL;
+	}
+ 	/*
+	 * SMB_ACL_TYPE_ACCESS -> ACL_TYPE_ACCESS -> Not valid for NFSv4 ACL
+	 */
+	//ret = set_sys_acl_conn(fname, SMB_ACL_TYPE_ACCESS, acl, conn);
+	ret = 0;
+ 	TALLOC_FREE(acl);
+ 	if (ret != 0) {
+		TALLOC_FREE(frame);
+		errno = ret;
+		return PyErr_SetFromErrno(PyExc_OSError);
+	}
+ 	TALLOC_FREE(frame);
+ 	Py_RETURN_NONE;
+}
+
+static PyObject *py_smbd_has_posix_acls(PyObject *self, PyObject *args, PyObject *kwargs)
+{
+	const char * const kwnames[] = { "path", NULL };
+	char *path = NULL;
+	TALLOC_CTX *frame;
+	struct statfs fs;
+	int ret = false;
+ 	frame = talloc_stackframe();
+ 	if (!PyArg_ParseTupleAndKeywords(args, kwargs, "s|z",
+					 discard_const_p(char *, kwnames), &path)) {
+		TALLOC_FREE(frame);
+		return NULL;
+	}
+ 	if (statfs(path, &fs) != 0) {
+		TALLOC_FREE(frame);
+		return NULL;
+	}
+ 	if (fs.f_flags & MNT_ACLS)
+		ret = true;
+ 	TALLOC_FREE(frame);
+	return PyBool_FromLong(ret);
+}
+ /*
+  check if we have NFSv4 ACL support
+ */
+static PyObject *py_smbd_have_nfsv4_acls(PyObject *self)
+{
+#ifdef HAVE_LIBSUNACL
+	return PyBool_FromLong(true);
+#else
+	return PyBool_FromLong(false);
+#endif
+}
+ static PyObject *py_smbd_has_nfsv4_acls(PyObject *self, PyObject *args, PyObject *kwargs)
+{
+	const char * const kwnames[] = { "path", NULL };
+	char *path = NULL;
+	TALLOC_CTX *frame;
+	struct statfs fs;
+	int ret = false;
+ 	frame = talloc_stackframe();
+ 	if (!PyArg_ParseTupleAndKeywords(args, kwargs, "s|z",
+					 discard_const_p(char *, kwnames), &path)) {
+		TALLOC_FREE(frame);
+		return NULL;
+	}
+ 	if (statfs(path, &fs) != 0) {
+		TALLOC_FREE(frame);
+		return NULL;
+	}
+ 	if (fs.f_flags & MNT_NFS4ACLS)
+		ret = true;
+ 	TALLOC_FREE(frame);
+	return PyBool_FromLong(ret);
+}
+ static PyObject *py_smbd_set_nfsv4_defaults(PyObject *self)
+{
+	/*
+	 * This should really be done in source3/param/loadparm.c
+	 */
+#if defined(HAVE_LIBSUNACL) && defined(FREEBSD)
+	lp_do_parameter(-1, "vfs objects", "dfs_samba4 zfsacl");
+#endif
 	Py_RETURN_NONE;
 }
 
@@ -843,8 +962,23 @@ static PyMethodDef py_smbd_methods[] = {
 	{ "have_posix_acls",
 		(PyCFunction)py_smbd_have_posix_acls, METH_NOARGS,
 		NULL },
+	{ "has_posix_acls",
+		(PyCFunction)py_smbd_has_posix_acls, METH_VARARGS|METH_KEYWORDS,
+		NULL },
+	{ "have_nfsv4_acls",
+		(PyCFunction)py_smbd_have_nfsv4_acls, METH_NOARGS,
+		NULL },
+	{ "has_nfsv4_acls",
+		(PyCFunction)py_smbd_has_nfsv4_acls, METH_VARARGS|METH_KEYWORDS,
+		NULL },
+	{ "set_nfsv4_defaults",
+		(PyCFunction)py_smbd_set_nfsv4_defaults, METH_NOARGS,
+		NULL },
 	{ "set_simple_acl",
 		(PyCFunction)py_smbd_set_simple_acl, METH_VARARGS|METH_KEYWORDS,
+		NULL },
+	{ "set_simple_nfsv4_acl",
+		(PyCFunction)py_smbd_set_simple_nfsv4_acl, METH_VARARGS|METH_KEYWORDS,
 		NULL },
 	{ "set_nt_acl",
 		(PyCFunction)py_smbd_set_nt_acl, METH_VARARGS|METH_KEYWORDS,
