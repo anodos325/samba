@@ -211,9 +211,22 @@ NTSTATUS get_ea_value(TALLOC_CTX *mem_ctx,
 			struct ea_struct *pea)
 {
 	/* Get the value of this xattr. Max size is 64k. */
-	size_t attr_size = 256;
+	size_t attr_size = 0;
 	char *val = NULL;
 	ssize_t sizeret;
+	static size_t min_xattr_size = 0;
+	static size_t max_xattr_size = 0;
+
+	if (min_xattr_size == 0) {
+		min_xattr_size = (size_t)lp_parm_ulonglong(
+			SNUM(conn), "smbd", "min_xattr_size", 256);
+	}
+	attr_size = min_xattr_size;
+
+	if (max_xattr_size == 0) {
+		max_xattr_size = (size_t)lp_parm_ulonglong(
+			SNUM(conn), "smbd", "max_xattr_size", 16*1024*1024);
+	}
 
  again:
 
@@ -229,8 +242,8 @@ NTSTATUS get_ea_value(TALLOC_CTX *mem_ctx,
 				ea_name, val, attr_size);
 	}
 
-	if (sizeret == -1 && errno == ERANGE && attr_size != 65536) {
-		attr_size = 65536;
+	if (sizeret == -1 && errno == ERANGE && attr_size <= max_xattr_size) {
+		attr_size = max_xattr_size;
 		goto again;
 	}
 
