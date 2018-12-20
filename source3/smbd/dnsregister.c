@@ -203,6 +203,7 @@ static void dns_register_smbd_retry(struct tevent_context *ctx,
 	TXTRecordRef txt_adisk;
 	TXTRecordRef txt_devinfo;
 	char *servname;
+	char *zeroconf_name = lp_zeroconf_name();
 	char *v_uuid;
 	int num_services = lp_numservices();
 
@@ -220,7 +221,7 @@ static void dns_register_smbd_retry(struct tevent_context *ctx,
 	err = DNSServiceRegister(&state->srv_ref,
 			0		/* flags */,
 			state->if_index /* interface index */,
-			NULL 		/* service name */,
+			zeroconf_name	/* service name */,
 			"_smb._tcp"	/* service type */,
 			NULL		/* domain */,
 			""		/* SRV target host name */,
@@ -284,7 +285,7 @@ static void dns_register_smbd_retry(struct tevent_context *ctx,
 		err = DNSServiceRegister(&state->srv_ref,
 				0		/* flags */,
 				state->if_index /* interface index */,
-				NULL 		/* service name */,
+				zeroconf_name	/* service name */,
 				"_adisk._tcp"	/* service type */,
 				NULL		/* domain */,
 				""		/* SRV target host name */,
@@ -368,6 +369,12 @@ bool smbd_setup_mdns_registration(struct tevent_context *ev,
 	struct dns_reg_state *dns_state;
 	bool bind_all = true;
 	int i;
+
+	if (lp_truenas_passive_controller()) {
+		DEBUG(3, ("Bypassing mDNS registration for passive storage controller\n"));
+		return true;
+	}
+
 
 	dns_state = talloc_zero(mem_ctx, struct dns_reg_state);
 	if (dns_state == NULL)
