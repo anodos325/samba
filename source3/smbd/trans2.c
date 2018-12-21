@@ -3752,8 +3752,11 @@ cBytesSector=%u, cUnitTotal=%u, cUnitAvail=%d\n", (unsigned int)bsize, (unsigned
 			fsp.conn = conn;
 			fsp.fnum = FNUM_FIELD_INVALID;
 
-			/* access check */
-			if (get_current_uid(conn) != 0) {
+			/* access check 
+ 			 * Allow access in case we have SEC_PRIV_DISK_OPERATOR.
+ 			 */
+			if (security_token_has_privilege(conn->session_info->security_token,
+							 SEC_PRIV_DISK_OPERATOR) != 0) {
 				DEBUG(0,("get_user_quota: access_denied "
 					 "service [%s] user [%s]\n",
 					 lp_servicename(talloc_tos(), SNUM(conn)),
@@ -4050,11 +4053,17 @@ static NTSTATUS smb_set_fsquota(connection_struct *conn,
 {
 	NTSTATUS status;
 	SMB_NTQUOTA_STRUCT quotas;
+	bool allowed_user;
+
+	if ((get_current_uid(conn) == 0) || (security_token_has_privilege(
+	   conn->session_info->security_token, SEC_PRIV_DISK_OPERATOR) == 0)) { 
+		allowed_user = true;
+	}
 
 	ZERO_STRUCT(quotas);
 
 	/* access check */
-	if ((get_current_uid(conn) != 0) || !CAN_WRITE(conn)) {
+	if ((!allowed_user) || !CAN_WRITE(conn)) {
 		DEBUG(3, ("set_fsquota: access_denied service [%s] user [%s]\n",
 			  lp_servicename(talloc_tos(), SNUM(conn)),
 			  conn->session_info->unix_info->unix_name));

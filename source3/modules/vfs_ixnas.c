@@ -24,6 +24,9 @@
 #include "libcli/security/security.h"
 #include "nfs4_acls.h"
 #include "system/filesys.h"
+#include <fstab.h>
+#include <sys/types.h>
+#include <ufs/ufs/quota.h>
 
 #if HAVE_FREEBSD_SUNACL_H
 #include "sunacl.h"
@@ -31,12 +34,15 @@
 
 #if HAVE_LIBZFS
 #include "lib/util/tevent_ntstatus.h"
-#include "modules/zfs_disk_free.h"
+#include "modules/smb_libzfs.h"
 #endif
+#include <libutil.h>
 
 #define ZFSACL_MODULE_NAME "ixnas"
+static int vfs_ixnas_debug_level = DBGC_VFS;
+
 #undef DBGC_CLASS
-#define DBGC_CLASS DBGC_VFS
+#define DBGC_CLASS vfs_ixnas_debug_level
 
 struct ixnas_config_data {
 	struct smbacl4_vfs_params nfs4_params;
@@ -47,6 +53,10 @@ struct ixnas_config_data {
 	bool zfs_acl_mapdaclprotected;
 	bool zfs_acl_denymissingspecial;
 	bool zfs_space_enabled;
+	bool zfs_quota_enabled;
+	bool zfs_auto_homedir;
+	const char *homedir_quota;
+	uint64_t base_user_quota; 
 };
 
 static uint32_t ixnas_fs_capabilities(struct vfs_handle_struct *handle,
@@ -125,8 +135,8 @@ static NTSTATUS set_dos_attributes_common(struct vfs_handle_struct *handle,
 	NTSTATUS status = NT_STATUS_OK;
 	uint32_t fileflags = dosmode_to_fileflags(dosmode);
 
-	DEBUG(10,("ixnas:set_dos_attributes: set attribute 0x%x, on file %s\n",
-	dosmode, smb_fname->base_name));
+	DBG_INFO("ixnas:set_dos_attributes: set attribute 0x%x, on file %s\n",
+		dosmode, smb_fname->base_name);
 	/*
 	* Optimization. This is most likely set by file owner. First try without
 	* performing additional permissions checks and using become_root().
@@ -191,6 +201,7 @@ static NTSTATUS ixnas_get_dos_attributes(struct vfs_handle_struct *handle,
 				return NT_STATUS_INTERNAL_ERROR);
 
 	if (!config->dosmode_enabled) {
+		DBG_INFO("ixnas: special dosmode handling disabled. passing to next VFS module");
 		return SMB_VFS_NEXT_GET_DOS_ATTRIBUTES(handle, smb_fname, dosmode);
 	}
 	
@@ -214,6 +225,7 @@ static NTSTATUS ixnas_fget_dos_attributes(struct vfs_handle_struct *handle,
 				return NT_STATUS_INTERNAL_ERROR);
 
 	if (!config->dosmode_enabled) {
+		DBG_INFO("ixnas: special dosmode handling disabled. passing to next VFS module");
 		return SMB_VFS_NEXT_FGET_DOS_ATTRIBUTES(handle, fsp, dosmode);
 	}
 
@@ -238,6 +250,7 @@ static NTSTATUS ixnas_set_dos_attributes(struct vfs_handle_struct *handle,
 				return NT_STATUS_INTERNAL_ERROR);
 
 	if (!config->dosmode_enabled) {
+		DBG_INFO("ixnas: special dosmode handling disabled. passing to next VFS module");
 		return SMB_VFS_NEXT_SET_DOS_ATTRIBUTES(handle, smb_fname, dosmode);
 	}
 
@@ -258,6 +271,7 @@ static NTSTATUS ixnas_fset_dos_attributes(struct vfs_handle_struct *handle,
 				return NT_STATUS_INTERNAL_ERROR);
 
 	if (!config->dosmode_enabled) {
+		DBG_INFO("ixnas: special dosmode handling disabled. passing to next VFS module");
 		return SMB_VFS_NEXT_FSET_DOS_ATTRIBUTES(handle, fsp, dosmode);
 	}
 	ret = set_dos_attributes_common(handle, fsp->fsp_name, dosmode);
@@ -267,6 +281,9 @@ static NTSTATUS ixnas_fset_dos_attributes(struct vfs_handle_struct *handle,
 
 /********************************************************************
  Correctly calculate free space on ZFS 
+ Per MS-FSCC, behavior for Windows 2000 -> 2008R2 is to account for
+ user quotas in TotalAllocationUnits and CallerAvailableAllocationUnits  
+ in FileFsFullSizeInformation.
 ********************************************************************/
 #if HAVE_LIBZFS
 static uint64_t ixnas_disk_free(vfs_handle_struct *handle, const struct smb_filename *smb_fname,
@@ -278,17 +295,17 @@ static uint64_t ixnas_disk_free(vfs_handle_struct *handle, const struct smb_file
 	if (realpath(smb_fname->base_name, rp) == NULL)
 		return (-1);
 
-	DEBUG(9, ("realpath = %s\n", rp));
+	DBG_DEBUG("realpath = %s\n", rp);
 
-	res = smb_zfs_disk_free(rp, bsize, dfree, dsize);
+	res = smb_zfs_disk_free(rp, bsize, dfree, dsize, geteuid());
 	if (res == (uint64_t)-1)
 		res = SMB_VFS_NEXT_DISK_FREE(handle, smb_fname, bsize, dfree, dsize);
 	if (res == (uint64_t)-1)
 		return (res);
 
-	DEBUG(9, ("*bsize = %" PRIu64 "\n", *bsize));
-	DEBUG(9, ("*dfree = %" PRIu64 "\n", *dfree));
-	DEBUG(9, ("*dsize = %" PRIu64 "\n", *dsize));
+	DBG_DEBUG("*bsize = %" PRIu64 "\n", *bsize);
+	DBG_DEBUG("*dfree = %" PRIu64 "\n", *dfree);
+	DBG_DEBUG("*dsize = %" PRIu64 "\n", *dsize);
 
 	return (res);
 }
@@ -387,12 +404,12 @@ static NTSTATUS zfs_get_nt_acl_common(struct connection_struct *conn,
 	/* read the number of file aces */
 	if((naces = acl(smb_fname->base_name, ACE_GETACLCNT, 0, NULL)) == -1) {
 		if(errno == ENOSYS) {
-			DEBUG(9, ("acl(ACE_GETACLCNT, %s): Operation is not "
+			DBG_ERR("acl(ACE_GETACLCNT, %s): Operation is not "
 				  "supported on the filesystem where the file "
-				  "reside\n", smb_fname->base_name));
+				  "reside\n", smb_fname->base_name);
 		} else {
-			DEBUG(9, ("acl(ACE_GETACLCNT, %s): %s ", smb_fname->base_name,
-					strerror(errno)));
+			DBG_ERR("acl(ACE_GETACLCNT, %s): %s ", smb_fname->base_name,
+					strerror(errno));
 		}
 		return map_nt_error_from_unix(errno);
 	}
@@ -404,8 +421,8 @@ static NTSTATUS zfs_get_nt_acl_common(struct connection_struct *conn,
 	}
 	/* read the aces into the field */
 	if(acl(smb_fname->base_name, ACE_GETACL, naces, acebuf) < 0) {
-		DEBUG(9, ("acl(ACE_GETACL, %s): %s ", smb_fname->base_name,
-				strerror(errno)));
+		DBG_ERR("acl(ACE_GETACL, %s): %s ", smb_fname->base_name,
+				strerror(errno));
 		return map_nt_error_from_unix(errno);
 	}
 	/* create SMB4ACL data */
@@ -470,14 +487,14 @@ static bool zfs_process_smbacl(vfs_handle_struct *handle, files_struct *fsp,
 		hidden_ace.aceType = SMB_ACE4_ACCESS_ALLOWED_ACE_TYPE;
 		hidden_ace.aceFlags = (SMB_ACE4_FILE_INHERIT_ACE|SMB_ACE4_DIRECTORY_INHERIT_ACE);
 		hidden_ace.aceMask = 0;
-		DEBUG(9, ("ixnas: setting empty everyone@ ace on dir  %s \n", fsp->fsp_name->base_name));	
+		DBG_DEBUG("ixnas: setting empty everyone@ ace on dir  %s \n", fsp->fsp_name->base_name);	
 	} else {
 		hidden_ace.flags = SMB_ACE4_ID_SPECIAL;
 		hidden_ace.who.id = SMB_ACE4_WHO_EVERYONE;
 		hidden_ace.aceType = SMB_ACE4_ACCESS_ALLOWED_ACE_TYPE;
 		hidden_ace.aceFlags = 0;
 		hidden_ace.aceMask = 0;
-		DEBUG(9, ("ixnas: setting empty everyone@ ace on file  %s \n", fsp->fsp_name->base_name));	
+		DBG_DEBUG("ixnas: setting empty everyone@ ace on file  %s \n", fsp->fsp_name->base_name);	
 	}
 
 	smb_add_ace4(smbacl, &hidden_ace);
@@ -520,8 +537,8 @@ static bool zfs_process_smbacl(vfs_handle_struct *handle, files_struct *fsp,
 				acebuf[i].a_flags |= ACE_GROUP|ACE_IDENTIFIER_GROUP;
 				break;
 			default:
-				DEBUG(8, ("unsupported special_id %d\n", \
-					aceprop->who.special_id));
+				DBG_INFO("unsupported special_id %d\n", \
+					aceprop->who.special_id);
 				continue; /* don't add it !!! */
 			}
 			have_special_id = true;
@@ -540,12 +557,12 @@ static bool zfs_process_smbacl(vfs_handle_struct *handle, files_struct *fsp,
 	/* store acl */
 	if(acl(fsp->fsp_name->base_name, ACE_SETACL, naces, acebuf)) {
 		if(errno == ENOSYS) {
-			DEBUG(9, ("acl(ACE_SETACL, %s): Operation is not "
+			DBG_ERR("acl(ACE_SETACL, %s): Operation is not "
 				  "supported on the filesystem where the file "
-				  "reside", fsp_str_dbg(fsp)));
+				  "reside", fsp_str_dbg(fsp));
 		} else {
-			DEBUG(9, ("acl(ACE_SETACL, %s): %s ", fsp_str_dbg(fsp),
-				  strerror(errno)));
+			DBG_DEBUG("acl(ACE_SETACL, %s): %s ", fsp_str_dbg(fsp),
+				  strerror(errno));
 		}
 		return 0;
 	}
@@ -655,6 +672,181 @@ static NTSTATUS ixnas_fset_nt_acl(vfs_handle_struct *handle,
 }
 
 /********************************************************************
+ Expose ZFS user/group quotas 
+********************************************************************/
+static int ixnas_get_quota(struct vfs_handle_struct *handle,
+                                const struct smb_filename *smb_fname,
+                                enum SMB_QUOTA_TYPE qtype,
+                                unid_t id,
+                                SMB_DISK_QUOTA *qt)
+{
+	int ret;
+	char rp[PATH_MAX] = { 0 };
+	struct ixnas_config_data *config;
+	uint64_t hardlimit, usedspace;
+	hardlimit = usedspace = 0;
+
+	SMB_VFS_HANDLE_GET_DATA(handle, config,
+				struct ixnas_config_data,
+				return -1);
+
+	if (realpath(smb_fname->base_name, rp) == NULL) {
+		DBG_ERR("failed to get realpath for (%s)\n", smb_fname->base_name);
+		return (-1);
+	}
+	become_root();
+	switch (qtype) {
+	case SMB_USER_QUOTA_TYPE:
+	case SMB_USER_FS_QUOTA_TYPE:
+		DBG_ERR("qtype: (%d), id: (%d)\n", qtype, id.uid);
+		if (id.uid == -1) {
+       			ret = smb_zfs_get_quota(rp, 0, qtype, &hardlimit, &usedspace);
+		}
+		else {
+       			ret = smb_zfs_get_quota(rp, id.uid, qtype, &hardlimit, &usedspace);
+		}
+		break;
+	case SMB_GROUP_QUOTA_TYPE:
+	case SMB_GROUP_FS_QUOTA_TYPE:
+		DBG_ERR("qtype: (%d), id: (%d)\n", qtype, id.gid);
+        	ret = smb_zfs_get_quota(rp, id.gid, qtype, &hardlimit, &usedspace);
+		break;
+        default:
+		DBG_ERR("Unrecognized quota type.\n");
+                break;
+        }
+	unbecome_root();
+
+	ZERO_STRUCTP(qt);
+	qt->bsize = 1024;
+	qt->hardlimit = hardlimit;
+	qt->softlimit = hardlimit;
+	qt->curblocks = usedspace;
+	qt->ihardlimit = hardlimit;
+	qt->isoftlimit = hardlimit;
+	qt->curinodes = usedspace;
+	qt->qtype = qtype;
+	qt->qflags = QUOTAS_DENY_DISK|QUOTAS_ENABLED;
+
+        DBG_INFO("ixnas_get_quota: hardlimit: (%lu), usedspace: (%lu)\n", qt->hardlimit, qt->curblocks);
+
+        return ret;
+}
+
+static int ixnas_set_quota(struct vfs_handle_struct *handle,
+			enum SMB_QUOTA_TYPE qtype, unid_t id,
+			SMB_DISK_QUOTA *qt)
+{
+	struct ixnas_config_data *config;
+	int ret;
+	
+
+	SMB_VFS_HANDLE_GET_DATA(handle, config,
+				struct ixnas_config_data,
+				return -1);
+
+	become_root();
+	switch (qtype) {
+	case SMB_USER_QUOTA_TYPE:
+	case SMB_USER_FS_QUOTA_TYPE:
+		DBG_INFO("ixnas_set_quota: quota type: (%d), id: (%d), h-limit: (%lu), s-limit: (%lu)\n", 
+			qtype, id.uid, qt->hardlimit, qt->softlimit);
+		ret = smb_zfs_set_quota(handle->conn->connectpath, id.uid, qtype, qt->hardlimit);
+		break;
+	case SMB_GROUP_QUOTA_TYPE:
+	case SMB_GROUP_FS_QUOTA_TYPE:
+		DBG_INFO("ixnas_set_quota: quota type: (%d), id: (%d), h-limit: (%lu), s-limit: (%lu)\n", 
+			qtype, id.gid, qt->hardlimit, qt->softlimit);
+		ret = smb_zfs_set_quota(handle->conn->connectpath, id.gid, qtype, qt->hardlimit);
+		break;
+        default:
+		DBG_ERR("Received unknown quota type.\n");
+		return -1;
+        }
+	unbecome_root();
+
+	return ret;
+
+}
+
+
+/********************************************************************
+ Create datasets for home directories. We fail if the path already
+ exists  
+********************************************************************/
+
+static int create_zfs_autohomedir(vfs_handle_struct *handle, const char *homedir_quota)
+{
+	bool ret;
+	int naces;
+	char rp[PATH_MAX] = { 0 };
+	char *parent;
+	char *base;
+	ace_t *parent_acl;
+	TALLOC_CTX *tmp_ctx = talloc_new(handle->data);
+
+	if (realpath(handle->conn->connectpath, rp)) {
+		DEBUG(0, ("Home directory already exists. Skipping dataset creation\n") );
+		TALLOC_FREE(tmp_ctx);
+		return -1;	
+	}
+
+	if (!parent_dirname(talloc_tos(), handle->conn->connectpath, &parent, &base)) {
+		TALLOC_FREE(tmp_ctx);
+		return -1;
+	}
+
+	DBG_DEBUG("Preparing to create dataset (%s) with parentdir (%s) with quota (%s)\n", 
+		parent, base, homedir_quota);
+
+	if (realpath(parent, rp) == NULL ){
+		DBG_ERR("Parent directory does not exist, skipping automatic dataset creation.\n");
+		TALLOC_FREE(tmp_ctx);
+		return -1;
+	}
+
+	ret = smb_zfs_create_homedir(parent, base, homedir_quota);
+
+	if ((naces = acl(parent, ACE_GETACLCNT, 0, NULL)) < 0) {
+		DBG_ERR("ACE_GETACLCNT failed with (%s)\n", strerror(errno));
+		TALLOC_FREE(tmp_ctx);
+		return -1;
+	}
+	if ((parent_acl = talloc_size(tmp_ctx, sizeof(ace_t) * naces)) == NULL) {
+		DBG_ERR("Failed to allocate memory for parent ACL\n");
+		errno = ENOMEM;
+		TALLOC_FREE(tmp_ctx);
+		return -1;
+	}
+
+	if ((acl(parent, ACE_GETACL, naces, parent_acl)) < 0) {
+		DBG_ERR("ACE_GETACL failed with (%s)\n", strerror(errno));
+		TALLOC_FREE(tmp_ctx);
+		return -1;
+	}
+
+	if (acl(handle->conn->connectpath, ACE_SETACL, naces, parent_acl) < 0) {
+		DBG_ERR("ACE_SETACL failed with (%s)\n", strerror(errno));
+		TALLOC_FREE(tmp_ctx);
+		ret = -1;
+	}
+
+	if (lp_parm_bool(SNUM(handle->conn), "ixnas", "do_homedir_chown", true)) {
+		become_root();
+		if (chown(handle->conn->connectpath, geteuid(), getegid()) < 0) {
+			DBG_ERR("Failed to chown (%s) to (%u:%u)\n",
+				handle->conn->connectpath, geteuid(), getegid() );
+		}	
+		unbecome_root();
+	} 
+
+	TALLOC_FREE(parent);
+	TALLOC_FREE(tmp_ctx);
+        return ret;
+}
+
+
+/********************************************************************
  Optimization. Load parameters on connect. This allows us to enable
  and disable portions of the large vfs module on demand.
 ********************************************************************/
@@ -663,14 +855,92 @@ static int ixnas_connect(struct vfs_handle_struct *handle,
 {
 	struct ixnas_config_data *config;
 	int ret;
+	const char *homedir_quota = NULL;
 
 	config = talloc_zero(handle->conn, struct ixnas_config_data);
 	if (!config) {
 		DEBUG(0, ("talloc_zero() failed\n"));
 		errno = ENOMEM;
 		return -1;
+	}	
+
+	/* Parameters for homedirs and quotas */
+	config->zfs_auto_homedir = lp_parm_bool(SNUM(handle->conn), 
+			"ixnas", "zfs_auto_homedir", false);
+	config->homedir_quota = lp_parm_const_string(SNUM(handle->conn),
+			"ixnas", "homedir_quota", NULL);
+	config->base_user_quota = lp_parm_ulong(SNUM(handle->conn),
+			"ixnas", "base_user_quota", 0);
+
+	if (config->zfs_auto_homedir) {
+		create_zfs_autohomedir(handle, config->homedir_quota);
 	}
 
+	/* OS-X Compatibility */
+	config->posix_rename = lp_parm_bool(SNUM(handle->conn),
+			"ixnas", "posix_rename", false);
+
+	/* DOSMODE PARAMETERS */
+	config->dosmode_enabled = lp_parm_bool(SNUM(handle->conn),
+			"ixnas", "dosmode_enabled", true);
+	/* 
+	 * When DOS modes are mapped to file flags, make sure other alternate
+	 * mapping of DOS modes are disabled.
+	 */
+
+	if (config->dosmode_enabled) {
+		if ((lp_map_readonly(SNUM(handle->conn))) == MAP_READONLY_YES) {
+			DBG_INFO("ixnas:dosmode to file flag mapping enabled,"
+				  "disabling 'map readonly'\n");
+			lp_do_parameter(SNUM(handle->conn), "map readonly",
+					"no");
+		}
+
+		if (lp_map_archive(SNUM(handle->conn))) {
+			DBG_INFO("ixnas:dosmode to file flag mapping enabled,"
+				  "disabling 'map archive'\n");
+			lp_do_parameter(SNUM(handle->conn), "map archive",
+					"no");
+		}
+
+		if (lp_store_dos_attributes(SNUM(handle->conn))){
+			DBG_INFO("ixnas:dosmode to file flag mapping enabled,"
+				  "disabling 'store dos attributes'\n");
+			lp_do_parameter(SNUM(handle->conn), "store dos attributes",
+					"no");
+		}
+
+		/*
+		 * Check to see if we want to enable offline files support. This is
+		 * Optimization inspired by vfs_offline by Uri Simchoni. Improves dir
+		 * listing speed for Windows Explorer by making it so that thumbnails
+		 * aren't generated
+		 */
+		config->dosmode_remote_storage = lp_parm_bool(SNUM(handle->conn),
+			"ixnas", "dosmode_remote_storage", false);
+	}
+
+	/* ZFS ACL PARAMETERS */
+	config->zfs_acl_enabled = lp_parm_bool(SNUM(handle->conn),
+			"ixnas", "zfs_acl_enabled", true);
+
+	if (config->zfs_acl_enabled) {
+		config->zfs_acl_mapdaclprotected = lp_parm_bool(SNUM(handle->conn),
+			"ixnas","zfsacl_mapdaclprotected", true);	
+		
+		config->zfs_acl_denymissingspecial = lp_parm_bool(SNUM(handle->conn),
+			"ixnas","zfsacl_denymissingspecial",false);
+	}
+	
+	/* ZFS SPACE PARAMETERS */
+#if HAVE_LIBZFS
+	config->zfs_space_enabled = lp_parm_bool(SNUM(handle->conn),
+			"ixnas", "zfs_space_enabled", true);
+
+	config->zfs_quota_enabled = lp_parm_bool(SNUM(handle->conn),
+			"ixnas", "zfs_quota_enabled", true);
+#endif
+	
 	ret = SMB_VFS_NEXT_CONNECT(handle, service, user);
 	if (ret < 0) {
 		TALLOC_FREE(config);
@@ -682,69 +952,6 @@ static int ixnas_connect(struct vfs_handle_struct *handle,
 		TALLOC_FREE(config);
 		return ret;
 	}
-
-	/* OS-X Compatibility */
-	config->posix_rename = lp_parm_bool(SNUM(handle->conn), "ixnas",
-				"posix_rename", false);
-
-	/* DOSMODE PARAMETERS */
-	config->dosmode_enabled = lp_parm_bool(SNUM(handle->conn), "ixnas",
-					"dosmode_enabled", true);
-
-	/* 
-	 * When DOS modes are mapped to file flags, make sure other alternate
-	 * mapping of DOS modes are disabled.
-	 */
-
-	if (config->dosmode_enabled) {
-		if ((lp_map_readonly(SNUM(handle->conn))) == MAP_READONLY_YES) {
-			DEBUG(5, ("ixnas:dosmode to file flag mapping enabled,"
-				  "disabling 'map readonly'\n"));
-			lp_do_parameter(SNUM(handle->conn), "map readonly",
-					"no");
-		}
-
-		if (lp_map_archive(SNUM(handle->conn))) {
-			DEBUG(5, ("ixnas:dosmode to file flag mapping enabled,"
-				  "disabling 'map archive'\n"));
-			lp_do_parameter(SNUM(handle->conn), "map archive",
-					"no");
-		}
-
-		if (lp_store_dos_attributes(SNUM(handle->conn))){
-			DEBUG(5, ("ixnas:dosmode to file flag mapping enabled,"
-				  "disabling 'store dos attributes'\n"));
-			lp_do_parameter(SNUM(handle->conn), "store dos attributes",
-					"no");
-		}
-
-		/*
-		 * Check to see if we want to enable offline files support. This is
-		 * Optimization inspired by vfs_offline by Uri Simchoni. Improves dir
-		 * listing speed for Windows Explorer by making it so that thumbnails
-		 * aren't generated
-		 */
-		config->dosmode_remote_storage = lp_parm_bool(SNUM(handle->conn), "ixnas",
-						"dosmode_remote_storage", false);
-	}
-
-	/* ZFS ACL PARAMETERS */
-	config->zfs_acl_enabled = lp_parm_bool(SNUM(handle->conn), "ixnas",
-					"zfs_acl_enabled", true);
-
-	if (config->zfs_acl_enabled) {
-		config->zfs_acl_mapdaclprotected = lp_parm_bool(SNUM(handle->conn),
-						"ixnas","zfsacl_mapdaclprotected", true);	
-		
-		config->zfs_acl_denymissingspecial = lp_parm_bool(SNUM(handle->conn),
-						"ixnas","zfsacl_denymissingspecial",false);
-	}
-	
-	/* ZFS SPACE PARAMETERS */
-#if HAVE_LIBZFS
-	config->zfs_space_enabled = lp_parm_bool(SNUM(handle->conn), "ixnas",
-				   "zfs_space_enabled", false);
-#endif
 
 	SMB_VFS_HANDLE_SET_DATA(handle, config,
 				NULL, struct ixnas_config_data,
@@ -767,6 +974,8 @@ static struct vfs_fn_pointers ixnas_fns = {
 	.get_nt_acl_fn = ixnas_get_nt_acl,
 	.fset_nt_acl_fn = ixnas_fset_nt_acl,
 #if HAVE_LIBZFS
+	.get_quota_fn = ixnas_get_quota,
+	.set_quota_fn = ixnas_set_quota,
 	.disk_free_fn = ixnas_disk_free
 #endif
 };
@@ -774,6 +983,17 @@ static struct vfs_fn_pointers ixnas_fns = {
 NTSTATUS vfs_ixnas_init(TALLOC_CTX *);
 NTSTATUS vfs_ixnas_init(TALLOC_CTX *ctx)
 {
-        return smb_register_vfs(SMB_VFS_INTERFACE_VERSION, "ixnas",
-                                &ixnas_fns);
+	return smb_register_vfs(SMB_VFS_INTERFACE_VERSION, "ixnas",
+				&ixnas_fns);
+
+	vfs_ixnas_debug_level = debug_add_class("ixnas");
+	if (vfs_ixnas_debug_level == -1) {
+		vfs_ixnas_debug_level = DBGC_VFS;
+		DEBUG(0, ("%s: Couldn't register custom debugging class!\n",
+			"vfs_ixnas_init"));
+	} else {
+		DEBUG(10, ("%s: Debug class number of '%s': %d\n",
+			"vfs_ixnas_init","ixnas",vfs_ixnas_debug_level));
+	}
+
 }

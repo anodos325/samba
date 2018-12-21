@@ -1,5 +1,5 @@
 /*-
- * Copyright 2015 iXsystems, Inc.
+ * Copyright 2018 iXsystems, Inc.
  * All rights reserved
  *
  * Redistribution and use in source and binary forms, with or without
@@ -25,52 +25,15 @@
  *
  */
 
-#define NEED_SOLARIS_BOOLEAN
+#ifndef	__SMB_LIBZFS_H
+#define	__SMB_LIBZFS_H
+#include <pwd.h>
 
-#include <libzfs.h>
+int smb_zfs_get_quota(char *path, int64_t xid, int quota_type, uint64_t *hardlimit, uint64_t *usedspace);
+int smb_zfs_set_quota(char *path, int64_t xid, int quota_type, uint64_t hardlimit);
+uint64_t smb_zfs_disk_free(char *path, uint64_t *bsize, uint64_t *dfree, uint64_t *dsize, uid_t euid);
+int smb_zfs_create_homedir(char *parent, char *base, const char *quota);
 
-#include "modules/zfs_disk_free.h"
 
 
-uint64_t
-smb_zfs_disk_free(char *path, uint64_t *bsize, uint64_t *dfree, uint64_t *dsize)
-{
-	size_t blocksize = 1024;
-	libzfs_handle_t *libzfsp;
-	zfs_handle_t *zfsp;
-	uint64_t available, usedbysnapshots, usedbydataset,
-		usedbychildren, usedbyrefreservation, real_used, total;
-
-	if (path == NULL)
-		return (-1);
-
-	if ((libzfsp = libzfs_init()) == NULL)
-		return (-1);
-
-	libzfs_print_on_error(libzfsp, B_TRUE);
-
-	zfsp = zfs_path_to_zhandle(libzfsp, path,
-		ZFS_TYPE_VOLUME|ZFS_TYPE_DATASET|ZFS_TYPE_FILESYSTEM);
-	if (zfsp == NULL)
-		return (-1);
-
-	available = zfs_prop_get_int(zfsp, ZFS_PROP_AVAILABLE);
-	usedbysnapshots = zfs_prop_get_int(zfsp, ZFS_PROP_USEDSNAP);
-	usedbydataset = zfs_prop_get_int(zfsp, ZFS_PROP_USEDDS);
-	usedbychildren = zfs_prop_get_int(zfsp, ZFS_PROP_USEDCHILD);
-	usedbyrefreservation = zfs_prop_get_int(zfsp, ZFS_PROP_USEDREFRESERV);
-
-	zfs_close(zfsp);
-	libzfs_fini(libzfsp);
-
-	real_used = usedbysnapshots + usedbydataset + usedbychildren;
-
-	total = (real_used + available) / blocksize;
-	available /= blocksize;
-
-	*bsize = blocksize;
-	*dfree = available;
-	*dsize = total;
-
-	return (*dfree);
-}
+#endif	/* !__SMB_LIBZFS_H */

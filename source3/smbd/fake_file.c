@@ -128,6 +128,7 @@ NTSTATUS open_fake_file(struct smb_request *req, connection_struct *conn,
 {
 	files_struct *fsp = NULL;
 	NTSTATUS status;
+	bool is_disk_op;
 
 	status = smbd_calculate_access_mask(conn, smb_fname, false,
 					    access_mask, &access_mask);
@@ -140,15 +141,35 @@ NTSTATUS open_fake_file(struct smb_request *req, connection_struct *conn,
 		return status;
 	}
 
-	/* access check */
-	if (geteuid() != sec_initial_uid()) {
-		DEBUG(3, ("open_fake_file_shared: access_denied to "
-			  "service[%s] file[%s] user[%s]\n",
-			  lp_servicename(talloc_tos(), SNUM(conn)),
-			  smb_fname_str_dbg(smb_fname),
-			  conn->session_info->unix_info->unix_name));
-		return NT_STATUS_ACCESS_DENIED;
+	/* access check 
+ 	 * Allow access to QUOTA fake file if user has DISK_OPERATOR
+ 	 * privileges. This is a subset of local admin rights.
+ 	 */
+	switch(fake_file_type){
+	case FAKE_FILE_TYPE_QUOTA:
+ 		is_disk_op = security_token_has_privilege(
+			conn->session_info->security_token,
+			SEC_PRIV_DISK_OPERATOR);
+		if (!is_disk_op) {
+			DBG_NOTICE("Access denied to "
+				   "service[%s] file[%s]. User [%s] "
+				   "lacks SE_PRIV_DISK_OPERATOR\n",
+				   lp_servicename(talloc_tos(), SNUM(conn)),
+				   smb_fname_str_dbg(smb_fname),
+				   conn->session_info->unix_info->unix_name);
+			return NT_STATUS_ACCESS_DENIED;
+		}
+		break;
+	default:
+		if (geteuid() != sec_initial_uid()) {
+			DEBUG(3, ("open_fake_file_shared: access_denied to "
+				  "service[%s] file[%s] user[%s]\n",
+				  lp_servicename(talloc_tos(), SNUM(conn)),
+				  smb_fname_str_dbg(smb_fname),
+				  conn->session_info->unix_info->unix_name));
+			return NT_STATUS_ACCESS_DENIED;
 
+		}	
 	}
 
 	status = file_new(req, conn, &fsp);
