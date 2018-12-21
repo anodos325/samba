@@ -109,14 +109,11 @@ static uint32_t dosmode_to_fileflags(uint32_t dosmode)
 	if (dosmode & FILE_ATTRIBUTE_READONLY) {
 		fileflags |= UF_READONLY;
 	}
-	if (dosmode & FILE_ATTRIBUTE_SPARSE) {
-		fileflags |= UF_SPARSE;
-	}
 	if (dosmode & FILE_ATTRIBUTE_SYSTEM) {
 		fileflags |= UF_SYSTEM;
-}
+	}
 
-return fileflags;
+	return fileflags;
 }
 
 static NTSTATUS set_dos_attributes_common(struct vfs_handle_struct *handle,
