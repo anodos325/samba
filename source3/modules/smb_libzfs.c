@@ -56,8 +56,8 @@ smb_zfs_get_quota(char *path, int64_t xid, enum SMB_QUOTA_TYPE quota_type, uint6
 	uint64_t quota, used; 
 	quota = used = 0;
 
-	DBG_ERR("Path: (%s), xid: %lu), qtype (%u), limit (%lu)\n",
-		path, xid, quota_type, hardlimit);
+	DBG_ERR("Path: (%s), xid: %lu), qtype (%u)\n",
+		path, xid, quota_type);
 
 	switch (quota_type) {
 	case SMB_USER_QUOTA_TYPE:
@@ -259,7 +259,7 @@ smb_zfs_disk_free(char *path, uint64_t *bsize, uint64_t *dfree, uint64_t *dsize,
  */
 
 int
-smb_zfs_create_homedir(char *parent, char *base, const char *quota)
+smb_zfs_create_homedir(char *parent, const char *base, const char *quota)
 {
 	libzfs_handle_t *libzfsp;
 	zfs_handle_t *zfsp;

@@ -684,6 +684,7 @@ static int ixnas_get_quota(struct vfs_handle_struct *handle,
 	char rp[PATH_MAX] = { 0 };
 	struct ixnas_config_data *config;
 	uint64_t hardlimit, usedspace;
+	uid_t current_user = geteuid();
 	hardlimit = usedspace = 0;
 
 	SMB_VFS_HANDLE_GET_DATA(handle, config,
@@ -694,28 +695,34 @@ static int ixnas_get_quota(struct vfs_handle_struct *handle,
 		DBG_ERR("failed to get realpath for (%s)\n", smb_fname->base_name);
 		return (-1);
 	}
-	become_root();
 	switch (qtype) {
 	case SMB_USER_QUOTA_TYPE:
 	case SMB_USER_FS_QUOTA_TYPE:
 		DBG_ERR("qtype: (%d), id: (%d)\n", qtype, id.uid);
+		//passing -1 to quotactl means that the current UID should be used. Do the same.
 		if (id.uid == -1) {
-       			ret = smb_zfs_get_quota(rp, 0, qtype, &hardlimit, &usedspace);
+			become_root();
+       			ret = smb_zfs_get_quota(rp, current_user, qtype, &hardlimit, &usedspace);
+			unbecome_root();
 		}
 		else {
+			become_root();
        			ret = smb_zfs_get_quota(rp, id.uid, qtype, &hardlimit, &usedspace);
+			unbecome_root();
 		}
 		break;
 	case SMB_GROUP_QUOTA_TYPE:
 	case SMB_GROUP_FS_QUOTA_TYPE:
 		DBG_ERR("qtype: (%d), id: (%d)\n", qtype, id.gid);
+		become_root();
         	ret = smb_zfs_get_quota(rp, id.gid, qtype, &hardlimit, &usedspace);
+		unbecome_root();
 		break;
         default:
 		DBG_ERR("Unrecognized quota type.\n");
+		ret = -1;
                 break;
         }
-	unbecome_root();
 
 	ZERO_STRUCTP(qt);
 	qt->bsize = 1024;
@@ -751,19 +758,23 @@ static int ixnas_set_quota(struct vfs_handle_struct *handle,
 	case SMB_USER_FS_QUOTA_TYPE:
 		DBG_INFO("ixnas_set_quota: quota type: (%d), id: (%d), h-limit: (%lu), s-limit: (%lu)\n", 
 			qtype, id.uid, qt->hardlimit, qt->softlimit);
+		become_root();
 		ret = smb_zfs_set_quota(handle->conn->connectpath, id.uid, qtype, qt->hardlimit);
+		unbecome_root();
 		break;
 	case SMB_GROUP_QUOTA_TYPE:
 	case SMB_GROUP_FS_QUOTA_TYPE:
 		DBG_INFO("ixnas_set_quota: quota type: (%d), id: (%d), h-limit: (%lu), s-limit: (%lu)\n", 
 			qtype, id.gid, qt->hardlimit, qt->softlimit);
+		become_root();
 		ret = smb_zfs_set_quota(handle->conn->connectpath, id.gid, qtype, qt->hardlimit);
+		unbecome_root();
 		break;
         default:
 		DBG_ERR("Received unknown quota type.\n");
-		return -1;
+		ret = -1;
+		break;
         }
-	unbecome_root();
 
 	return ret;
 
@@ -781,7 +792,7 @@ static int create_zfs_autohomedir(vfs_handle_struct *handle, const char *homedir
 	int naces;
 	char rp[PATH_MAX] = { 0 };
 	char *parent;
-	char *base;
+	const char *base;
 	ace_t *parent_acl;
 	TALLOC_CTX *tmp_ctx = talloc_new(handle->data);
 
@@ -845,6 +856,50 @@ static int create_zfs_autohomedir(vfs_handle_struct *handle, const char *homedir
         return ret;
 }
 
+/*
+ * Fake the presence of a base quota. Check if user quota already exists.
+ * If it exists, then we assume that the base quota has either already been set
+ * or it has been modified by the admin. In either case, do nothing.
+ */
+
+static int set_base_user_quota(vfs_handle_struct *handle, uint64_t base_quota, const char *user)
+{
+	int ret;
+	uint64_t existing_quota, usedspace;
+	existing_quota = usedspace = 0;
+	uid_t current_user = nametouid(user);
+	base_quota /= 1024;
+
+	if ( !current_user ) {
+		DBG_ERR("Failed to convert (%s) to uid.\n", user); 
+		return -1;
+	}
+
+	DBG_ERR("set_base_user_quote: uid (%u), quota (%lu)\n", current_user, base_quota);
+
+	if ( smb_zfs_get_quota(handle->conn->connectpath, 
+				current_user,
+				SMB_USER_QUOTA_TYPE,
+				&existing_quota,
+				&usedspace) < 0 ) {
+		DBG_ERR("Failed to get base quota uid: (%lu), path (%s)\n",
+			current_user, handle->conn->connectpath );
+		return -1;
+	}
+
+	if ( !existing_quota ) {
+		ret = smb_zfs_set_quota(handle->conn->connectpath,
+					current_user,
+					SMB_USER_QUOTA_TYPE,
+					base_quota);
+		if (!ret) {
+			DBG_ERR("Failed to set base quota uid: (%u), path (%s), value (%lu)\n",
+				current_user, handle->conn->connectpath, base_quota );
+		}
+	}
+	return ret;
+}
+
 
 /********************************************************************
  Optimization. Load parameters on connect. This allows us to enable
@@ -856,6 +911,7 @@ static int ixnas_connect(struct vfs_handle_struct *handle,
 	struct ixnas_config_data *config;
 	int ret;
 	const char *homedir_quota = NULL;
+	const char *base_quota_str = NULL;
 
 	config = talloc_zero(handle->conn, struct ixnas_config_data);
 	if (!config) {
@@ -869,8 +925,19 @@ static int ixnas_connect(struct vfs_handle_struct *handle,
 			"ixnas", "zfs_auto_homedir", false);
 	config->homedir_quota = lp_parm_const_string(SNUM(handle->conn),
 			"ixnas", "homedir_quota", NULL);
-	config->base_user_quota = lp_parm_ulong(SNUM(handle->conn),
-			"ixnas", "base_user_quota", 0);
+	
+	base_quota_str = lp_parm_const_string(SNUM(handle->conn),
+			"ixnas", "base_user_quota", NULL);
+
+	if (base_quota_str != NULL) {
+		config->base_user_quota = conv_str_size(base_quota_str); 
+		DBG_ERR("Quota string (%s) converted to (%lu)\n", 
+			base_quota_str, config->base_user_quota);
+        }
+
+	if (config->base_user_quota) {
+		set_base_user_quota(handle, config->base_user_quota, user);
+	}
 
 	if (config->zfs_auto_homedir) {
 		create_zfs_autohomedir(handle, config->homedir_quota);

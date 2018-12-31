@@ -3748,6 +3748,13 @@ cBytesSector=%u, cUnitTotal=%u, cUnitAvail=%d\n", (unsigned int)bsize, (unsigned
 
 			ZERO_STRUCT(fsp);
 			ZERO_STRUCT(quotas);
+			bool allowed_user;
+			if ((get_current_uid(conn) == 0) || (security_token_has_privilege(
+			   conn->session_info->security_token, SEC_PRIV_DISK_OPERATOR) == 0)) {
+				allowed_user = true;
+			}
+
+
 
 			fsp.conn = conn;
 			fsp.fnum = FNUM_FIELD_INVALID;
@@ -3755,8 +3762,7 @@ cBytesSector=%u, cUnitTotal=%u, cUnitAvail=%d\n", (unsigned int)bsize, (unsigned
 			/* access check 
  			 * Allow access in case we have SEC_PRIV_DISK_OPERATOR.
  			 */
-			if (security_token_has_privilege(conn->session_info->security_token,
-							 SEC_PRIV_DISK_OPERATOR) != 0) {
+			if ( !allowed_user ) {
 				DEBUG(0,("get_user_quota: access_denied "
 					 "service [%s] user [%s]\n",
 					 lp_servicename(talloc_tos(), SNUM(conn)),

@@ -32,7 +32,7 @@
 int smb_zfs_get_quota(char *path, int64_t xid, int quota_type, uint64_t *hardlimit, uint64_t *usedspace);
 int smb_zfs_set_quota(char *path, int64_t xid, int quota_type, uint64_t hardlimit);
 uint64_t smb_zfs_disk_free(char *path, uint64_t *bsize, uint64_t *dfree, uint64_t *dsize, uid_t euid);
-int smb_zfs_create_homedir(char *parent, char *base, const char *quota);
+int smb_zfs_create_homedir(char *parent, const char *base, const char *quota);
 
 
 
