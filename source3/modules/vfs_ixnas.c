@@ -691,6 +691,12 @@ static int ixnas_get_quota(struct vfs_handle_struct *handle,
 				struct ixnas_config_data,
 				return -1);
 
+	if (!config->zfs_quota_enabled) {
+		DBG_ERR("Quotas disabled in ixnas configuration.\n");
+		errno = ENOSYS;
+		return -1;
+	}
+
 	if (realpath(smb_fname->base_name, rp) == NULL) {
 		DBG_ERR("failed to get realpath for (%s)\n", smb_fname->base_name);
 		return (-1);
@@ -752,6 +758,12 @@ static int ixnas_set_quota(struct vfs_handle_struct *handle,
 				struct ixnas_config_data,
 				return -1);
 
+	if (!config->zfs_quota_enabled) {
+		DBG_ERR("Quotas disabled in ixnas configuration.\n");
+		errno = ENOSYS;
+		return -1;
+	}
+
 	become_root();
 	switch (qtype) {
 	case SMB_USER_QUOTA_TYPE:
@@ -786,7 +798,9 @@ static int ixnas_set_quota(struct vfs_handle_struct *handle,
  exists  
 ********************************************************************/
 
-static int create_zfs_autohomedir(vfs_handle_struct *handle, const char *homedir_quota)
+static int create_zfs_autohomedir(vfs_handle_struct *handle, 
+				  const char *homedir_quota,
+				  const char *user)
 {
 	bool ret;
 	int naces;
@@ -812,6 +826,7 @@ static int create_zfs_autohomedir(vfs_handle_struct *handle, const char *homedir
 
 	if (realpath(parent, rp) == NULL ){
 		DBG_ERR("Parent directory does not exist, skipping automatic dataset creation.\n");
+		TALLOC_FREE(parent);
 		TALLOC_FREE(tmp_ctx);
 		return -1;
 	}
@@ -820,35 +835,45 @@ static int create_zfs_autohomedir(vfs_handle_struct *handle, const char *homedir
 
 	if ((naces = acl(parent, ACE_GETACLCNT, 0, NULL)) < 0) {
 		DBG_ERR("ACE_GETACLCNT failed with (%s)\n", strerror(errno));
+		TALLOC_FREE(parent);
 		TALLOC_FREE(tmp_ctx);
 		return -1;
 	}
 	if ((parent_acl = talloc_size(tmp_ctx, sizeof(ace_t) * naces)) == NULL) {
 		DBG_ERR("Failed to allocate memory for parent ACL\n");
 		errno = ENOMEM;
+		TALLOC_FREE(parent);
 		TALLOC_FREE(tmp_ctx);
 		return -1;
 	}
 
 	if ((acl(parent, ACE_GETACL, naces, parent_acl)) < 0) {
 		DBG_ERR("ACE_GETACL failed with (%s)\n", strerror(errno));
+		TALLOC_FREE(parent);
 		TALLOC_FREE(tmp_ctx);
 		return -1;
 	}
 
 	if (acl(handle->conn->connectpath, ACE_SETACL, naces, parent_acl) < 0) {
 		DBG_ERR("ACE_SETACL failed with (%s)\n", strerror(errno));
+		TALLOC_FREE(parent);
 		TALLOC_FREE(tmp_ctx);
-		ret = -1;
+		return -1;
 	}
 
-	if (lp_parm_bool(SNUM(handle->conn), "ixnas", "do_homedir_chown", true)) {
-		become_root();
-		if (chown(handle->conn->connectpath, geteuid(), getegid()) < 0) {
+	if (lp_parm_bool(SNUM(handle->conn), "ixnas", "chown_homedir", true)) {
+		struct passwd *current_user = Get_Pwnam_alloc(tmp_ctx, user);
+		if ( !current_user ) {
+			DBG_ERR("Get_Pwnam_alloc failed for (%s).\n", user); 
+			TALLOC_FREE(parent);
+			TALLOC_FREE(tmp_ctx);
+			return -1;
+		}		
+		if (chown(handle->conn->connectpath, current_user->pw_uid, current_user->pw_gid) < 0) {
 			DBG_ERR("Failed to chown (%s) to (%u:%u)\n",
-				handle->conn->connectpath, geteuid(), getegid() );
+				handle->conn->connectpath, current_user, getegid() );
+			ret = -1;
 		}	
-		unbecome_root();
 	} 
 
 	TALLOC_FREE(parent);
@@ -874,6 +899,8 @@ static int set_base_user_quota(vfs_handle_struct *handle, uint64_t base_quota, c
 		DBG_ERR("Failed to convert (%s) to uid.\n", user); 
 		return -1;
 	}
+
+	DBG_ERR("Current UID is: %u\n", get_current_uid(handle->conn) );
 
 	DBG_ERR("set_base_user_quote: uid (%u), quota (%lu)\n", current_user, base_quota);
 
@@ -940,7 +967,7 @@ static int ixnas_connect(struct vfs_handle_struct *handle,
 	}
 
 	if (config->zfs_auto_homedir) {
-		create_zfs_autohomedir(handle, config->homedir_quota);
+		create_zfs_autohomedir(handle, config->homedir_quota, user);
 	}
 
 	/* OS-X Compatibility */
