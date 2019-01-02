@@ -56,7 +56,7 @@ smb_zfs_get_quota(char *path, int64_t xid, enum SMB_QUOTA_TYPE quota_type, uint6
 	uint64_t quota, used; 
 	quota = used = 0;
 
-	DBG_ERR("Path: (%s), xid: %lu), qtype (%u)\n",
+	DBG_DEBUG("Path: (%s), xid: %lu), qtype (%u)\n",
 		path, xid, quota_type);
 
 	switch (quota_type) {
@@ -64,13 +64,13 @@ smb_zfs_get_quota(char *path, int64_t xid, enum SMB_QUOTA_TYPE quota_type, uint6
 	case SMB_USER_FS_QUOTA_TYPE:
 		snprintf(u_req, sizeof(u_req), "userused@%lu", xid);
 		snprintf(q_req, sizeof(q_req), "userquota@%lu", xid);
-		DBG_ERR("u_req: (%s), q_req (%s)\n", u_req, q_req);
+		DBG_DEBUG("u_req: (%s), q_req (%s)\n", u_req, q_req);
 		break;
 	case SMB_GROUP_QUOTA_TYPE:
 	case SMB_GROUP_FS_QUOTA_TYPE:
 		snprintf(u_req, sizeof(u_req), "groupused@%lu", xid);
 		snprintf(q_req, sizeof(q_req), "groupquota@%lu", xid);
-		DBG_ERR("u_req: (%s), q_req (%s)\n", u_req, q_req);
+		DBG_DEBUG("u_req: (%s), q_req (%s)\n", u_req, q_req);
 		break;
 	default:
 		DBG_ERR("Received unknown quota type (%d)\n", quota_type);
@@ -97,7 +97,7 @@ smb_zfs_get_quota(char *path, int64_t xid, enum SMB_QUOTA_TYPE quota_type, uint6
 		return (-1);
 	}
 	
-	DBG_ERR("userused string: (%s), userquota string: (%s)\n", u_req, q_req);
+	DBG_DEBUG("userused string: (%s), userquota string: (%s)\n", u_req, q_req);
 	zfs_prop_get_userquota_int(zfsp, q_req, &quota);
 	zfs_prop_get_userquota_int(zfsp, u_req, &used);
 
@@ -124,18 +124,18 @@ smb_zfs_set_quota(char *path, int64_t xid, enum SMB_QUOTA_TYPE quota_type, uint6
 	hardlimit *= blocksize;
 	snprintf(quota, sizeof(quota), "%lu", hardlimit); 
 
-	DBG_ERR("Path: (%s), xid: %lu), qtype (%u), limit (%lu)\n",
+	DBG_DEBUG("Path: (%s), xid: %lu), qtype (%u), limit (%lu)\n",
 		path, xid, quota_type, hardlimit);
 	switch (quota_type) {
 	case SMB_USER_QUOTA_TYPE:
 	case SMB_USER_FS_QUOTA_TYPE:
 		snprintf(q_req, sizeof(q_req), "userquota@%lu", xid);
-		DBG_ERR("userquota string is (%s)\n", q_req);
+		DBG_DEBUG("userquota string is (%s)\n", q_req);
 		break;
 	case SMB_GROUP_QUOTA_TYPE:
 	case SMB_GROUP_FS_QUOTA_TYPE:
 		snprintf(q_req, sizeof(q_req), "groupquota@%lu", xid);
-		DBG_ERR("groupquota string is (%s)\n", q_req);
+		DBG_DEBUG("groupquota string is (%s)\n", q_req);
 		break;
 	default:
 		DBG_ERR("Received unknown quota type (%d)\n", quota_type);
@@ -163,7 +163,7 @@ smb_zfs_set_quota(char *path, int64_t xid, enum SMB_QUOTA_TYPE quota_type, uint6
 		return (-1);
 	}
 
-	DBG_ERR("PREPARING: smb_zfs_set_quota: Set (%s = %s)\n", q_req, quota);
+	DBG_INFO("PREPARING: smb_zfs_set_quota: Set (%s = %s)\n", q_req, quota);
 	if (zfs_prop_set(zfsp, q_req, quota) != 0) {
 		DBG_ERR("Failed to set (%s = %s)\n", q_req, quota);
 		zfs_close(zfsp);
@@ -249,15 +249,6 @@ smb_zfs_disk_free(char *path, uint64_t *bsize, uint64_t *dfree, uint64_t *dsize,
 	return (*dfree);
 }
 
-
-/*
- *	Create auto home dataset
- *	1) create dataset
- *	2) mount dataset
- *	3) set required properties
- *	4) set ACL
- */
-
 int
 smb_zfs_create_homedir(char *parent, const char *base, const char *quota)
 {
@@ -267,7 +258,6 @@ smb_zfs_create_homedir(char *parent, const char *base, const char *quota)
 	char *p = strdup(parent);
 	const char *parent_dataset;
 	char nd[PATH_MAX] = { 0 };
-	char homepath[PATH_MAX] = { 0 };
 	if (parent == NULL) {
 		return (-1);
 	}
@@ -286,10 +276,8 @@ smb_zfs_create_homedir(char *parent, const char *base, const char *quota)
 		return (-1);
 	}
 	parent_dataset = zfs_get_name(zfsp); 
-	DEBUG(0, ("Parent dataset detected as (%s)\n", parent_dataset) );
 	snprintf(nd, sizeof(nd), "%s/%s", parent_dataset, base);
   
-	DEBUG(0, ("Preparing to create ZFS dataset (%s)\n", nd));
 	if (zfs_create(libzfsp, nd, ZFS_TYPE_DATASET, NULL) != 0){
 		DBG_ERR("Failed to create dataset to path (%s)\n", nd);
 		zfs_close(zfsp);
@@ -306,7 +294,6 @@ smb_zfs_create_homedir(char *parent, const char *base, const char *quota)
 		return (-1);
 	}
 
-	DEBUG(0, ("Preparing to mount ZFS dataset (%s)\n", nd));
 	if (zfs_mount(new_zfsp, NULL, 0) != 0) {
 		DBG_ERR("Failed to mount ZFS dataset (%s)\n", nd);
 	}
@@ -316,6 +303,9 @@ smb_zfs_create_homedir(char *parent, const char *base, const char *quota)
 			DBG_ERR("Failed to set quota to (%s)\n", quota);
 		}
 	}
+
+	DBG_DEBUG("Created ZFS dataset (%s) with quota (%s)\n", nd, quota);
+
 	zfs_close(new_zfsp);
 	libzfs_fini(libzfsp);
 

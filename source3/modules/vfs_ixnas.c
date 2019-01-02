@@ -821,7 +821,7 @@ static int create_zfs_autohomedir(vfs_handle_struct *handle,
 		return -1;
 	}
 
-	DBG_DEBUG("Preparing to create dataset (%s) with parentdir (%s) with quota (%s)\n", 
+	DBG_INFO("Preparing to create dataset (%s) with parentdir (%s) with quota (%s)\n", 
 		parent, base, homedir_quota);
 
 	if (realpath(parent, rp) == NULL ){
@@ -900,10 +900,6 @@ static int set_base_user_quota(vfs_handle_struct *handle, uint64_t base_quota, c
 		return -1;
 	}
 
-	DBG_ERR("Current UID is: %u\n", get_current_uid(handle->conn) );
-
-	DBG_ERR("set_base_user_quote: uid (%u), quota (%lu)\n", current_user, base_quota);
-
 	if ( smb_zfs_get_quota(handle->conn->connectpath, 
 				current_user,
 				SMB_USER_QUOTA_TYPE,
@@ -913,6 +909,8 @@ static int set_base_user_quota(vfs_handle_struct *handle, uint64_t base_quota, c
 			current_user, handle->conn->connectpath );
 		return -1;
 	}
+
+	DBG_INFO("set_base_user_quote: uid (%u), quota (%lu)\n", current_user, base_quota);
 
 	if ( !existing_quota ) {
 		ret = smb_zfs_set_quota(handle->conn->connectpath,
@@ -947,6 +945,7 @@ static int ixnas_connect(struct vfs_handle_struct *handle,
 		return -1;
 	}	
 
+#if HAVE_LIBZFS
 	/* Parameters for homedirs and quotas */
 	config->zfs_auto_homedir = lp_parm_bool(SNUM(handle->conn), 
 			"ixnas", "zfs_auto_homedir", false);
@@ -969,6 +968,7 @@ static int ixnas_connect(struct vfs_handle_struct *handle,
 	if (config->zfs_auto_homedir) {
 		create_zfs_autohomedir(handle, config->homedir_quota, user);
 	}
+#endif
 
 	/* OS-X Compatibility */
 	config->posix_rename = lp_parm_bool(SNUM(handle->conn),

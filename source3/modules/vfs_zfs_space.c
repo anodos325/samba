@@ -49,9 +49,9 @@ static uint64_t vfs_zfs_space_disk_free(vfs_handle_struct *handle, const struct 
 	if (res == (uint64_t)-1)
 		return (res);
 
-	DEBUG(0, ("*bsize = %" PRIu64 "\n", *bsize));
-	DEBUG(0, ("*dfree = %" PRIu64 "\n", *dfree));
-	DEBUG(0, ("*dsize = %" PRIu64 "\n", *dsize));
+	DEBUG(9, ("*bsize = %" PRIu64 "\n", *bsize));
+	DEBUG(9, ("*dfree = %" PRIu64 "\n", *dfree));
+	DEBUG(9, ("*dsize = %" PRIu64 "\n", *dsize));
 
 	return (res);
 }
