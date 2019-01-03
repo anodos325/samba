@@ -1151,8 +1151,13 @@ class cmd_aclcheck(Command):
 
             fs_sd = conn.get_acl(sharepath, security.SECINFO_OWNER | security.SECINFO_GROUP | security.SECINFO_DACL, security.SEC_FLAG_MAXIMUM_ALLOWED)
 
-            ds_sd_ndr = m['nTSecurityDescriptor'][0]
-            ds_sd = ndr_unpack(security.descriptor, ds_sd_ndr).as_sddl()
+            try:
+                ds_sd_ndr = m['nTSecurityDescriptor'][0]
+                ds_sd = ndr_unpack(security.descriptor, ds_sd_ndr).as_sddl()
+            except Exception:
+                # It appears that GPO entries will not always have an ACL stored in the
+                # db. This shouldn't be a fatal error.
+                continue
 
             # Create a file system security descriptor
             domain_sid = security.dom_sid(self.samdb.get_domain_sid())
