@@ -1642,17 +1642,6 @@ def setsysvolacl(samdb, netlogon, sysvol, uid, gid, domainsid, dnsdomain,
         file = tempfile.NamedTemporaryFile(dir=sysvol_dir)
         try:
             try:
-                print "bypassing test for ACL type"
-                #smbd.set_simple_acl(file.name, 0o755, gid)
-            except OSError:
-                print "OSERROR OCCURED AFTER SETTING ACL"
-                if not smbd.have_posix_acls() and not smbd.have_nfsv4_acls():
-                    raise ProvisioningError("Samba was compiled without the ACL support that s3fs requires.  "
-                                            "Try installing libacl1-dev or libacl-devel, then re-run configure and make.")
-
-                raise ProvisioningError("Your filesystem or build does not support ACLs, which s3fs requires. " 
-                                        "Try the mounting the filesystem with the 'acl' option.")
-            try:
                 smbd.chown(file.name, uid, gid)
             except OSError:
                 raise ProvisioningError("Unable to chown a file on your filesystem.  "
@@ -1731,10 +1720,10 @@ def acl_type(direct_db_access):
     else:
         return "VFS"
 
-def check_dir_acl(path, acl, lp, domainsid, direct_db_access):
+def check_dir_acl(path, dacl, facl, lp, domainsid, direct_db_access):
     fsacl = getntacl(lp, path, direct_db_access=direct_db_access, service=SYSVOL_SERVICE)
     fsacl_sddl = fsacl.as_sddl(domainsid)
-    if fsacl_sddl != acl:
+    if fsacl_sddl != dacl:
         raise ProvisioningError('%s ACL on GPO directory %s %s does not match expected value %s from GPO object' % (acl_type(direct_db_access), path, fsacl_sddl, acl))
 
     for root, dirs, files in os.walk(path, topdown=False):
@@ -1744,7 +1733,7 @@ def check_dir_acl(path, acl, lp, domainsid, direct_db_access):
             if fsacl is None:
                 raise ProvisioningError('%s ACL on GPO file %s %s not found!' % (acl_type(direct_db_access), os.path.join(root, name)))
             fsacl_sddl = fsacl.as_sddl(domainsid)
-            if fsacl_sddl != acl:
+            if fsacl_sddl != facl:
                 raise ProvisioningError('%s ACL on GPO file %s %s does not match expected value %s from GPO object' % (acl_type(direct_db_access), os.path.join(root, name), fsacl_sddl, acl))
 
         for name in dirs:
@@ -1753,7 +1742,7 @@ def check_dir_acl(path, acl, lp, domainsid, direct_db_access):
             if fsacl is None:
                 raise ProvisioningError('%s ACL on GPO directory %s %s not found!' % (acl_type(direct_db_access), os.path.join(root, name)))
             fsacl_sddl = fsacl.as_sddl(domainsid)
-            if fsacl_sddl != acl:
+            if fsacl_sddl != dacl:
                 raise ProvisioningError('%s ACL on GPO directory %s %s does not match expected value %s from GPO object' % (acl_type(direct_db_access), os.path.join(root, name), fsacl_sddl, acl))
 
 
@@ -1787,7 +1776,7 @@ def check_gpos_acl(sysvol, dnsdomain, domainsid, domaindn, samdb, lp,
         acl = ndr_unpack(security.descriptor,
                          str(policy["nTSecurityDescriptor"])).as_sddl()
         policy_path = getpolicypath(sysvol, dnsdomain, str(policy["cn"]))
-        check_dir_acl(policy_path, dsacl2fsacl(acl, domainsid), lp,
+        check_dir_acl(policy_path, dsacl2fsacl(acl, domainsid, is_dir=True), dsacl2fsacl(acl, domainsid, is_dir=False), lp,
                       domainsid, direct_db_access)
 
 
