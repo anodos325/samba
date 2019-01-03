@@ -93,7 +93,8 @@ smb_zfs_get_quota(char *path, int64_t xid, enum SMB_QUOTA_TYPE quota_type, uint6
 		ZFS_TYPE_VOLUME|ZFS_TYPE_DATASET|ZFS_TYPE_FILESYSTEM);
 
 	if (zfsp == NULL) {
-		
+		DBG_ERR("Failed to convert path (%s) to zhandle\n", path);
+		libzfs_fini(libzfsp);
 		return (-1);
 	}
 	
@@ -210,6 +211,7 @@ smb_zfs_disk_free(char *path, uint64_t *bsize, uint64_t *dfree, uint64_t *dsize,
 		ZFS_TYPE_VOLUME|ZFS_TYPE_DATASET|ZFS_TYPE_FILESYSTEM);
 	if (zfsp == NULL) {
 		DBG_ERR("Failed to convert path (%s) to zhandle\n", path);
+		libzfs_fini(libzfsp);
 		return (-1);
 	}
 
@@ -273,6 +275,7 @@ smb_zfs_create_homedir(char *parent, const char *base, const char *quota)
 
 	if (zfsp == NULL) {
 		DBG_ERR("Failed to obtain zhandle on parent directory: (%s)\n", parent);
+		libzfs_fini(libzfsp);
 		return (-1);
 	}
 	parent_dataset = zfs_get_name(zfsp); 
