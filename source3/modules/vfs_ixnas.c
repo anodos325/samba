@@ -692,7 +692,7 @@ static int ixnas_get_quota(struct vfs_handle_struct *handle,
 				return -1);
 
 	if (!config->zfs_quota_enabled) {
-		DBG_ERR("Quotas disabled in ixnas configuration.\n");
+		DBG_DEBUG("Quotas disabled in ixnas configuration.\n");
 		errno = ENOSYS;
 		return -1;
 	}
@@ -704,7 +704,6 @@ static int ixnas_get_quota(struct vfs_handle_struct *handle,
 	switch (qtype) {
 	case SMB_USER_QUOTA_TYPE:
 	case SMB_USER_FS_QUOTA_TYPE:
-		DBG_ERR("qtype: (%d), id: (%d)\n", qtype, id.uid);
 		//passing -1 to quotactl means that the current UID should be used. Do the same.
 		if (id.uid == -1) {
 			become_root();
@@ -719,7 +718,6 @@ static int ixnas_get_quota(struct vfs_handle_struct *handle,
 		break;
 	case SMB_GROUP_QUOTA_TYPE:
 	case SMB_GROUP_FS_QUOTA_TYPE:
-		DBG_ERR("qtype: (%d), id: (%d)\n", qtype, id.gid);
 		become_root();
         	ret = smb_zfs_get_quota(rp, id.gid, qtype, &hardlimit, &usedspace);
 		unbecome_root();
@@ -759,7 +757,7 @@ static int ixnas_set_quota(struct vfs_handle_struct *handle,
 				return -1);
 
 	if (!config->zfs_quota_enabled) {
-		DBG_ERR("Quotas disabled in ixnas configuration.\n");
+		DBG_DEBUG("Quotas disabled in ixnas configuration.\n");
 		errno = ENOSYS;
 		return -1;
 	}
@@ -871,7 +869,7 @@ static int create_zfs_autohomedir(vfs_handle_struct *handle,
 		}		
 		if (chown(handle->conn->connectpath, current_user->pw_uid, current_user->pw_gid) < 0) {
 			DBG_ERR("Failed to chown (%s) to (%u:%u)\n",
-				handle->conn->connectpath, current_user, getegid() );
+				handle->conn->connectpath, current_user->pw_uid, getegid() );
 			ret = -1;
 		}	
 	} 
@@ -905,7 +903,7 @@ static int set_base_user_quota(vfs_handle_struct *handle, uint64_t base_quota, c
 				SMB_USER_QUOTA_TYPE,
 				&existing_quota,
 				&usedspace) < 0 ) {
-		DBG_ERR("Failed to get base quota uid: (%lu), path (%s)\n",
+		DBG_ERR("Failed to get base quota uid: (%u), path (%s)\n",
 			current_user, handle->conn->connectpath );
 		return -1;
 	}
@@ -957,8 +955,6 @@ static int ixnas_connect(struct vfs_handle_struct *handle,
 
 	if (base_quota_str != NULL) {
 		config->base_user_quota = conv_str_size(base_quota_str); 
-		DBG_ERR("Quota string (%s) converted to (%lu)\n", 
-			base_quota_str, config->base_user_quota);
         }
 
 	if (config->base_user_quota) {
