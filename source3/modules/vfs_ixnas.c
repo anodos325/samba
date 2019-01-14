@@ -50,7 +50,7 @@ struct ixnas_config_data {
 	bool dosmode_enabled;
 	bool dosmode_remote_storage;
 	bool zfs_acl_enabled;
-	bool zfs_acl_mapdaclprotected;
+	bool zfs_acl_expose_snapdir;
 	bool zfs_acl_denymissingspecial;
 	bool zfs_space_enabled;
 	bool zfs_quota_enabled;
@@ -624,9 +624,24 @@ static NTSTATUS ixnas_fget_nt_acl(struct vfs_handle_struct *handle,
 
 	status = zfs_get_nt_acl_common(handle->conn, frame,
 				       fsp->fsp_name, &pacl, config);
+
 	if (!NT_STATUS_IS_OK(status)) {
 		TALLOC_FREE(frame);
-		return status;
+		// Control whether we expose .zfs/snapdir over SMB.
+		if (!config->zfs_acl_expose_snapdir || !NT_STATUS_EQUAL(status, NT_STATUS_NOT_SUPPORTED)) {
+			return status;
+		}
+
+		status = make_default_filesystem_acl(mem_ctx,
+						     DEFAULT_ACL_POSIX,
+						     fsp->fsp_name->base_name,
+						     &fsp->fsp_name->st,
+						     ppdesc);
+		if (!NT_STATUS_IS_OK(status)) {
+			return status;
+		}
+		(*ppdesc)->type |= SEC_DESC_DACL_PROTECTED;
+		return NT_STATUS_OK;
 	}
 
 	status = smb_fget_nt_acl_nfs4(fsp, &config->nfs4_params, security_info, mem_ctx,
@@ -656,9 +671,30 @@ static NTSTATUS ixnas_get_nt_acl(struct vfs_handle_struct *handle,
 	}
 
 	status = zfs_get_nt_acl_common(handle->conn, frame, smb_fname, &pacl, config);
+
 	if (!NT_STATUS_IS_OK(status)) {
 		TALLOC_FREE(frame);
-		return status;
+		// Control whether we expose .zfs/snapdir over SMB.
+		if (!config->zfs_acl_expose_snapdir || !NT_STATUS_EQUAL(status, NT_STATUS_NOT_SUPPORTED)) {
+			return status;
+		}
+
+		if (!VALID_STAT(smb_fname->st)) {
+			DBG_ERR("No stat info for [%s]\n",
+				smb_fname_str_dbg(smb_fname));
+			return NT_STATUS_INTERNAL_ERROR;
+		}
+
+		status = make_default_filesystem_acl(mem_ctx,
+						     DEFAULT_ACL_POSIX,
+						     smb_fname->base_name,
+						     &smb_fname->st,
+						     ppdesc);
+		if (!NT_STATUS_IS_OK(status)) {
+			return status;
+		}
+		(*ppdesc)->type |= SEC_DESC_DACL_PROTECTED;
+		return NT_STATUS_OK;
 	}
 
 	status = smb_get_nt_acl_nfs4(handle->conn,
@@ -688,6 +724,56 @@ static NTSTATUS ixnas_fset_nt_acl(vfs_handle_struct *handle,
 	}
 
 	return zfs_set_nt_acl(handle, fsp, security_info_sent, psd, config);
+}
+
+static SMB_ACL_T ixnas_fail__sys_acl_get_file(vfs_handle_struct *handle,
+					const struct smb_filename *smb_fname,
+					SMB_ACL_TYPE_T type,
+					TALLOC_CTX *mem_ctx)
+{
+	return (SMB_ACL_T)NULL;
+}
+
+static SMB_ACL_T ixnas_fail__sys_acl_get_fd(vfs_handle_struct *handle,
+					     files_struct *fsp,
+					     TALLOC_CTX *mem_ctx)
+{
+	return (SMB_ACL_T)NULL;
+}
+
+static int ixnas_fail__sys_acl_set_file(vfs_handle_struct *handle,
+					 const struct smb_filename *smb_fname,
+					 SMB_ACL_TYPE_T type,
+					 SMB_ACL_T theacl)
+{
+	return -1;
+}
+
+static int ixnas_fail__sys_acl_set_fd(vfs_handle_struct *handle,
+				       files_struct *fsp,
+				       SMB_ACL_T theacl)
+{
+	return -1;
+}
+
+static int ixnas_fail__sys_acl_delete_def_file(vfs_handle_struct *handle,
+			const struct smb_filename *smb_fname)
+{
+	return -1;
+}
+
+static int ixnas_fail__sys_acl_blob_get_file(vfs_handle_struct *handle,
+			const struct smb_filename *smb_fname,
+			TALLOC_CTX *mem_ctx,
+			char **blob_description,
+			DATA_BLOB *blob)
+{
+	return -1;
+}
+
+static int ixnas_fail__sys_acl_blob_get_fd(vfs_handle_struct *handle, files_struct *fsp, TALLOC_CTX *mem_ctx, char **blob_description, DATA_BLOB *blob)
+{
+	return -1;
 }
 
 /********************************************************************
@@ -1034,8 +1120,8 @@ static int ixnas_connect(struct vfs_handle_struct *handle,
 			"ixnas", "zfs_acl_enabled", true);
 
 	if (config->zfs_acl_enabled) {
-		config->zfs_acl_mapdaclprotected = lp_parm_bool(SNUM(handle->conn),
-			"ixnas","zfsacl_mapdaclprotected", true);	
+		config->zfs_acl_expose_snapdir = lp_parm_bool(SNUM(handle->conn),
+			"ixnas","zfsacl_expose_snapdir", true);	
 		
 		config->zfs_acl_denymissingspecial = lp_parm_bool(SNUM(handle->conn),
 			"ixnas","zfsacl_denymissingspecial",false);
@@ -1082,6 +1168,14 @@ static struct vfs_fn_pointers ixnas_fns = {
 	.fget_nt_acl_fn = ixnas_fget_nt_acl,
 	.get_nt_acl_fn = ixnas_get_nt_acl,
 	.fset_nt_acl_fn = ixnas_fset_nt_acl,
+	.sys_acl_get_file_fn = ixnas_fail__sys_acl_get_file,
+	.sys_acl_get_fd_fn = ixnas_fail__sys_acl_get_fd,
+	.sys_acl_blob_get_file_fn = ixnas_fail__sys_acl_blob_get_file,
+	.sys_acl_blob_get_fd_fn = ixnas_fail__sys_acl_blob_get_fd,
+	.sys_acl_set_file_fn = ixnas_fail__sys_acl_set_file,
+	.sys_acl_set_fd_fn = ixnas_fail__sys_acl_set_fd,
+	.sys_acl_delete_def_file_fn = ixnas_fail__sys_acl_delete_def_file,
+	
 #if HAVE_LIBZFS
 	.get_quota_fn = ixnas_get_quota,
 	.set_quota_fn = ixnas_set_quota,
