@@ -2744,6 +2744,13 @@ static void init_locals(void)
 				lp_do_parameter(-1, "vfs objects", "dfs_samba4 acl_xattr xattr_tdb");
 			} else if (lp_parm_const_string(-1, "posix", "eadb", NULL)) {
 				lp_do_parameter(-1, "vfs objects", "dfs_samba4 acl_xattr posix_eadb");
+	/*
+ 	 * By default, the samba sysvol is located in the statedir. Provisioning will fail in setntacl
+ 	 * unless we have zfacl enabled. Unfortunately, at this point the smb.conf has not been generated.
+ 	 * This workaround is freebsd-specific.
+ 	 */
+			} else if (pathconf(get_dyn_STATEDIR(), _PC_ACL_NFS4) == 1){
+				lp_do_parameter(-1, "vfs objects", "dfs_samba4 zfsacl");
 			} else {
 				lp_do_parameter(-1, "vfs objects", "dfs_samba4 acl_xattr");
 			}
