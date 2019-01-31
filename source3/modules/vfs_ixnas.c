@@ -47,8 +47,6 @@ static int vfs_ixnas_debug_level = DBGC_VFS;
 struct ixnas_config_data {
 	struct smbacl4_vfs_params nfs4_params;
 	bool posix_rename;
-	bool dosmode_enabled;
-	bool dosmode_remote_storage;
 	bool zfs_acl_enabled;
 	bool zfs_acl_expose_snapdir;
 	bool zfs_acl_denymissingspecial;
@@ -58,23 +56,6 @@ struct ixnas_config_data {
 	const char *homedir_quota;
 	uint64_t base_user_quota; 
 };
-
-static uint32_t ixnas_fs_capabilities(struct vfs_handle_struct *handle,
-				enum timestamp_set_resolution *p_ts_res)
-{
-	uint32_t fs_capabilities = SMB_VFS_NEXT_FS_CAPABILITIES(handle, p_ts_res);
-	struct ixnas_config_data *config;
-
-	SMB_VFS_HANDLE_GET_DATA(handle, config,
-				struct ixnas_config_data,
-				return -1);
-
-	if (config->dosmode_remote_storage) {
-		fs_capabilities |= FILE_SUPPORTS_REMOTE_STORAGE;
-	}
-	
-	return fs_capabilities;
-}
 
 /********************************************************************
  Fuctions to store DOS attributes as File Flags.
@@ -121,6 +102,9 @@ static uint32_t dosmode_to_fileflags(uint32_t dosmode)
 	}
 	if (dosmode & FILE_ATTRIBUTE_SYSTEM) {
 		fileflags |= UF_SYSTEM;
+	}
+	if (dosmode & FILE_ATTRIBUTE_SPARSE) {
+		fileflags |= UF_SPARSE;
 	}
 
 	return fileflags;
@@ -194,21 +178,18 @@ static NTSTATUS ixnas_get_dos_attributes(struct vfs_handle_struct *handle,
 					 struct smb_filename *smb_fname,
 					 uint32_t *dosmode)
 {
-	struct ixnas_config_data *config;
+	*dosmode |= fileflags_to_dosmode(smb_fname->st.st_ex_flags);
 
-	SMB_VFS_HANDLE_GET_DATA(handle, config,
-				struct ixnas_config_data,
-				return NT_STATUS_INTERNAL_ERROR);
-
-	if (!config->dosmode_enabled) {
-		DBG_INFO("ixnas: special dosmode handling disabled. passing to next VFS module");
-		return SMB_VFS_NEXT_GET_DOS_ATTRIBUTES(handle, smb_fname, dosmode);
-	}
-	
-	*dosmode = fileflags_to_dosmode(smb_fname->st.st_ex_flags);
-
-	if (config->dosmode_remote_storage) {
-		*dosmode |= FILE_ATTRIBUTE_OFFLINE;
+	if (S_ISDIR(smb_fname->st.st_ex_mode)) {
+		*dosmode |= FILE_ATTRIBUTE_DIRECTORY;
+	/*
+ 	 * Windows default behavior appears to be that the archive bit 
+ 	 * on a directory is only explicitly set by clients. FreeBSD
+ 	 * sets this bit when the directory's contents are modified. Correct
+ 	 * action will be to introduce a sysctl to modify OS behavior in this
+ 	 * case.
+ 	 */
+		*dosmode &= ~FILE_ATTRIBUTE_ARCHIVE;
 	}
 
 	return NT_STATUS_OK;
@@ -218,21 +199,18 @@ static NTSTATUS ixnas_fget_dos_attributes(struct vfs_handle_struct *handle,
                                             struct files_struct *fsp,
                                             uint32_t *dosmode)
 {
-	struct ixnas_config_data *config;
+        *dosmode |= fileflags_to_dosmode(fsp->fsp_name->st.st_ex_flags);
 
-	SMB_VFS_HANDLE_GET_DATA(handle, config,
-				struct ixnas_config_data,
-				return NT_STATUS_INTERNAL_ERROR);
-
-	if (!config->dosmode_enabled) {
-		DBG_INFO("ixnas: special dosmode handling disabled. passing to next VFS module");
-		return SMB_VFS_NEXT_FGET_DOS_ATTRIBUTES(handle, fsp, dosmode);
-	}
-
-        *dosmode = fileflags_to_dosmode(fsp->fsp_name->st.st_ex_flags);
-
-	if (config->dosmode_remote_storage) {
-		*dosmode |= FILE_ATTRIBUTE_OFFLINE;
+	if (S_ISDIR(fsp->fsp_name->st.st_ex_mode)) {
+		*dosmode |= FILE_ATTRIBUTE_DIRECTORY;
+	/*
+ 	 * Windows default behavior appears to be that the archive bit 
+ 	 * on a directory is only explicitly set by clients. FreeBSD
+ 	 * sets this bit when the directory's contents are modified. Correct
+ 	 * action will be to introduce a sysctl to modify OS behavior in this
+ 	 * case.
+ 	 */
+		*dosmode &= ~FILE_ATTRIBUTE_ARCHIVE;
 	}
 
         return NT_STATUS_OK;
@@ -243,16 +221,6 @@ static NTSTATUS ixnas_set_dos_attributes(struct vfs_handle_struct *handle,
                                            uint32_t dosmode)
 {
 	NTSTATUS ret;
-	struct ixnas_config_data *config;
-
-	SMB_VFS_HANDLE_GET_DATA(handle, config,
-				struct ixnas_config_data,
-				return NT_STATUS_INTERNAL_ERROR);
-
-	if (!config->dosmode_enabled) {
-		DBG_INFO("ixnas: special dosmode handling disabled. passing to next VFS module");
-		return SMB_VFS_NEXT_SET_DOS_ATTRIBUTES(handle, smb_fname, dosmode);
-	}
 
 	ret = set_dos_attributes_common(handle, smb_fname, dosmode);
                 
@@ -264,16 +232,7 @@ static NTSTATUS ixnas_fset_dos_attributes(struct vfs_handle_struct *handle,
                                             uint32_t dosmode)
 {
 	NTSTATUS ret;
-	struct ixnas_config_data *config;
 
-	SMB_VFS_HANDLE_GET_DATA(handle, config,
-				struct ixnas_config_data,
-				return NT_STATUS_INTERNAL_ERROR);
-
-	if (!config->dosmode_enabled) {
-		DBG_INFO("ixnas: special dosmode handling disabled. passing to next VFS module");
-		return SMB_VFS_NEXT_FSET_DOS_ATTRIBUTES(handle, fsp, dosmode);
-	}
 	ret = set_dos_attributes_common(handle, fsp->fsp_name, dosmode);
 
 	return ret;
@@ -405,7 +364,7 @@ static NTSTATUS zfs_get_nt_acl_common(struct connection_struct *conn,
 	/* read the number of file aces */
 	if((naces = acl(smb_fname->base_name, ACE_GETACLCNT, 0, NULL)) == -1) {
 		if(errno == ENOSYS) {
-			DBG_ERR("acl(ACE_GETACLCNT, %s): Operation is not "
+			DBG_INFO("acl(ACE_GETACLCNT, %s): Operation is not "
 				  "supported on the filesystem where the file "
 				  "reside\n", smb_fname->base_name);
 		} else {
@@ -422,7 +381,7 @@ static NTSTATUS zfs_get_nt_acl_common(struct connection_struct *conn,
 	}
 	/* read the aces into the field */
 	if(acl(smb_fname->base_name, ACE_GETACL, naces, acebuf) < 0) {
-		DBG_ERR("acl(ACE_GETACL, %s): %s ", smb_fname->base_name,
+		DBG_INFO("acl(ACE_GETACL, %s): %s ", smb_fname->base_name,
 				strerror(errno));
 		return map_nt_error_from_unix(errno);
 	}
@@ -776,8 +735,9 @@ static int ixnas_fail__sys_acl_blob_get_fd(vfs_handle_struct *handle, files_stru
 	return -1;
 }
 
+#if HAVE_LIBZFS
 /********************************************************************
- Expose ZFS user/group quotas 
+  Expose ZFS user/group quotas 
 ********************************************************************/
 static int ixnas_get_quota(struct vfs_handle_struct *handle,
                                 const struct smb_filename *smb_fname,
@@ -1027,7 +987,7 @@ static int set_base_user_quota(vfs_handle_struct *handle, uint64_t base_quota, c
 	}
 	return ret;
 }
-
+#endif
 
 /********************************************************************
  Optimization. Load parameters on connect. This allows us to enable
@@ -1075,44 +1035,29 @@ static int ixnas_connect(struct vfs_handle_struct *handle,
 	config->posix_rename = lp_parm_bool(SNUM(handle->conn),
 			"ixnas", "posix_rename", false);
 
-	/* DOSMODE PARAMETERS */
-	config->dosmode_enabled = lp_parm_bool(SNUM(handle->conn),
-			"ixnas", "dosmode_enabled", true);
 	/* 
-	 * When DOS modes are mapped to file flags, make sure other alternate
-	 * mapping of DOS modes are disabled.
+	 * Ensure other alternate methods of mapping dosmodes are disabled.
 	 */
 
-	if (config->dosmode_enabled) {
-		if ((lp_map_readonly(SNUM(handle->conn))) == MAP_READONLY_YES) {
-			DBG_INFO("ixnas:dosmode to file flag mapping enabled,"
-				  "disabling 'map readonly'\n");
-			lp_do_parameter(SNUM(handle->conn), "map readonly",
-					"no");
-		}
+	if ((lp_map_readonly(SNUM(handle->conn))) == MAP_READONLY_YES) {
+		DBG_INFO("ixnas:dosmode to file flag mapping enabled,"
+			  "disabling 'map readonly'\n");
+		lp_do_parameter(SNUM(handle->conn), "map readonly",
+				"no");
+	}
 
-		if (lp_map_archive(SNUM(handle->conn))) {
-			DBG_INFO("ixnas:dosmode to file flag mapping enabled,"
-				  "disabling 'map archive'\n");
-			lp_do_parameter(SNUM(handle->conn), "map archive",
-					"no");
-		}
+	if (lp_map_archive(SNUM(handle->conn))) {
+		DBG_INFO("ixnas:dosmode to file flag mapping enabled,"
+			  "disabling 'map archive'\n");
+		lp_do_parameter(SNUM(handle->conn), "map archive",
+				"no");
+	}
 
-		if (lp_store_dos_attributes(SNUM(handle->conn))){
-			DBG_INFO("ixnas:dosmode to file flag mapping enabled,"
-				  "disabling 'store dos attributes'\n");
-			lp_do_parameter(SNUM(handle->conn), "store dos attributes",
-					"no");
-		}
-
-		/*
-		 * Check to see if we want to enable offline files support. This is
-		 * Optimization inspired by vfs_offline by Uri Simchoni. Improves dir
-		 * listing speed for Windows Explorer by making it so that thumbnails
-		 * aren't generated
-		 */
-		config->dosmode_remote_storage = lp_parm_bool(SNUM(handle->conn),
-			"ixnas", "dosmode_remote_storage", false);
+	if (lp_store_dos_attributes(SNUM(handle->conn))){
+		DBG_INFO("ixnas:dosmode to file flag mapping enabled,"
+			  "disabling 'store dos attributes'\n");
+		lp_do_parameter(SNUM(handle->conn), "store dos attributes",
+				"no");
 	}
 
 	/* ZFS ACL PARAMETERS */
@@ -1158,7 +1103,6 @@ static int ixnas_connect(struct vfs_handle_struct *handle,
 static struct vfs_fn_pointers ixnas_fns = {
 	.connect_fn = ixnas_connect,
 	.create_file_fn = ixnas_create_file,
-	.fs_capabilities_fn = ixnas_fs_capabilities,
 	/* dosmode_enabled */
 	.get_dos_attributes_fn = ixnas_get_dos_attributes,
 	.fget_dos_attributes_fn = ixnas_fget_dos_attributes,
@@ -1192,11 +1136,10 @@ NTSTATUS vfs_ixnas_init(TALLOC_CTX *ctx)
 	vfs_ixnas_debug_level = debug_add_class("ixnas");
 	if (vfs_ixnas_debug_level == -1) {
 		vfs_ixnas_debug_level = DBGC_VFS;
-		DEBUG(0, ("%s: Couldn't register custom debugging class!\n",
-			"vfs_ixnas_init"));
+		DBG_ERR("%s: Couldn't register custom debugging class!\n",
+			"vfs_ixnas_init");
 	} else {
-		DEBUG(10, ("%s: Debug class number of '%s': %d\n",
-			"vfs_ixnas_init","ixnas",vfs_ixnas_debug_level));
+		DBG_DEBUG("%s: Debug class number of '%s': %d\n",
+		"vfs_ixnas_init","ixnas",vfs_ixnas_debug_level);
 	}
-
 }
