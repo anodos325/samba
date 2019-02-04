@@ -181,13 +181,12 @@ static NTSTATUS ixnas_get_dos_attributes(struct vfs_handle_struct *handle,
 	*dosmode |= fileflags_to_dosmode(smb_fname->st.st_ex_flags);
 
 	if (S_ISDIR(smb_fname->st.st_ex_mode)) {
-		*dosmode |= FILE_ATTRIBUTE_DIRECTORY;
 	/*
  	 * Windows default behavior appears to be that the archive bit 
  	 * on a directory is only explicitly set by clients. FreeBSD
- 	 * sets this bit when the directory's contents are modified. Correct
- 	 * action will be to introduce a sysctl to modify OS behavior in this
- 	 * case.
+ 	 * sets this bit when the directory's contents are modified. 
+ 	 * This is a temporary hack until we can make OS behavior 
+ 	 * configurable 
  	 */
 		*dosmode &= ~FILE_ATTRIBUTE_ARCHIVE;
 	}
@@ -202,13 +201,12 @@ static NTSTATUS ixnas_fget_dos_attributes(struct vfs_handle_struct *handle,
         *dosmode |= fileflags_to_dosmode(fsp->fsp_name->st.st_ex_flags);
 
 	if (S_ISDIR(fsp->fsp_name->st.st_ex_mode)) {
-		*dosmode |= FILE_ATTRIBUTE_DIRECTORY;
 	/*
  	 * Windows default behavior appears to be that the archive bit 
  	 * on a directory is only explicitly set by clients. FreeBSD
- 	 * sets this bit when the directory's contents are modified. Correct
- 	 * action will be to introduce a sysctl to modify OS behavior in this
- 	 * case.
+ 	 * sets this bit when the directory's contents are modified. 
+ 	 * This is a temporary hack until we can make OS behavior 
+ 	 * configurable 
  	 */
 		*dosmode &= ~FILE_ATTRIBUTE_ARCHIVE;
 	}
