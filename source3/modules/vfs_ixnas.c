@@ -475,7 +475,6 @@ static bool zfs_process_smbacl(vfs_handle_struct *handle, files_struct *fsp,
 	acl_entry_t hidden_entry;
 	struct SMB4ACE_T *smbace;
 	zacl = acl_init(nzaces);
-	DBG_ERR("nzaces: %d, naces: %d\n", nzaces, naces);
 	bool is_dir;
 	SMB_STRUCT_STAT sbuf;
 	const SMB_STRUCT_STAT *psbuf = NULL;
