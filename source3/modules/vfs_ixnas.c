@@ -517,9 +517,9 @@ static bool zfs_process_smbacl(vfs_handle_struct *handle, files_struct *fsp,
 		int l, m, h;
 		l = m = h = 0;
 
-		l = (uint32_t) aceprop->aceMask << 3;
-		m = (uint32_t) aceprop->aceMask << 2;
-		h = (uint32_t) aceprop->aceMask >> 5;
+		l =  aceprop->aceMask << 3;
+		m =  aceprop->aceMask << 2;
+		h =  aceprop->aceMask >> 5;
 		l &= (ACL_READ_DATA|ACL_WRITE_DATA|ACL_APPEND_DATA|ACL_READ_NAMED_ATTRS|ACL_WRITE_NAMED_ATTRS);
 		m &= (ACL_WRITE_ATTRIBUTES|ACL_READ_ATTRIBUTES|ACL_DELETE_CHILD); 
 		h &= (ACL_READ_ACL|ACL_WRITE_ACL|ACL_WRITE_OWNER|ACL_DELETE); //Drop SYNCRHONIZE per#7909 
@@ -574,7 +574,10 @@ static bool zfs_process_smbacl(vfs_handle_struct *handle, files_struct *fsp,
 
 	SMB_ASSERT(i == naces);
 	if (acl_create_entry(&zacl, &hidden_entry) < 0) {
-		DBG_ERR("Failed to create new ACL entry: %s\n", strerror(errno));
+		DBG_ERR("acl_create_entry() failed for %s with error: %s\n", 
+			fsp_str_dbg(fsp), strerror(errno));
+		acl_free(zacl);
+		return False;
 	}
 
 	if (is_dir) {
