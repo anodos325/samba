@@ -189,6 +189,9 @@ static NTSTATUS noacl_fget_dos_attributes(struct vfs_handle_struct *handle,
                                             struct files_struct *fsp,
                                             uint32_t *dosmode)
 {
+	if ((fsp->fsp_name->st.st_ex_mode & (S_IWUSR | S_IWGRP | S_IWOTH)) == 0) {
+		*dosmode |= FILE_ATTRIBUTE_READONLY;
+	}
         *dosmode |= fileflags_to_dosmode(fsp->fsp_name->st.st_ex_flags);
 
 	if (S_ISDIR(fsp->fsp_name->st.st_ex_mode)) {
