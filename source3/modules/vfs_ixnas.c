@@ -432,9 +432,6 @@ static NTSTATUS zfs_get_nt_acl_common(struct connection_struct *conn,
 			aceprop.aceMask |= SMB_ACE4_SYNCHRONIZE;
 		}
 
-		if (is_dir && (aceprop.aceMask & SMB_ACE4_ADD_FILE)) {
-			aceprop.aceMask |= SMB_ACE4_DELETE_CHILD;
-		}
 		/*
 		 * Test whether ACL contains any ACEs with the
 		 * inherited flag set. We use this to determine whether
