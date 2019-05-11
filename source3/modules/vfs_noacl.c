@@ -122,9 +122,9 @@ static NTSTATUS set_dos_attributes_common(struct vfs_handle_struct *handle,
 		dosmode, smb_fname->base_name);
 
 
-        if (IS_DOS_READONLY(dosmode)) {
-                new_mode &= ~(S_IWUSR | S_IWGRP | S_IWOTH);
-        }
+	if (IS_DOS_READONLY(dosmode)) {
+		new_mode &= ~(S_IWUSR | S_IWGRP | S_IWOTH);
+		}
 	else {
 		new_mode |= (S_IWUSR | S_IWGRP | S_IWOTH);
 	}
@@ -192,7 +192,7 @@ static NTSTATUS noacl_fget_dos_attributes(struct vfs_handle_struct *handle,
 	if ((fsp->fsp_name->st.st_ex_mode & (S_IWUSR | S_IWGRP | S_IWOTH)) == 0) {
 		*dosmode |= FILE_ATTRIBUTE_READONLY;
 	}
-        *dosmode |= fileflags_to_dosmode(fsp->fsp_name->st.st_ex_flags);
+	*dosmode |= fileflags_to_dosmode(fsp->fsp_name->st.st_ex_flags);
 
 	if (S_ISDIR(fsp->fsp_name->st.st_ex_mode)) {
 	/*
@@ -215,8 +215,8 @@ static NTSTATUS noacl_set_dos_attributes(struct vfs_handle_struct *handle,
 	NTSTATUS ret;
 
 	ret = set_dos_attributes_common(handle, smb_fname, dosmode);
-                
-        return ret;
+
+	return ret;
 }
 
 static NTSTATUS noacl_fset_dos_attributes(struct vfs_handle_struct *handle,
