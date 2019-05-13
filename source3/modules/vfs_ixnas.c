@@ -524,11 +524,21 @@ static bool zfs_process_smbacl(vfs_handle_struct *handle, files_struct *fsp,
 		zacl->ats_acl.acl_entry[i].ae_flags              = aceprop->aceFlags;
 		zacl->ats_acl.acl_entry[i].ae_perm               = (l|m|h);
 		zacl->ats_acl.acl_entry[i].ae_flags             &= ~SMB_ACE4_IDENTIFIER_GROUP; //FreeBSD doesn't store group in ae_flags
-		if (aceprop->aceType) {
-			zacl->ats_acl.acl_entry[i].ae_entry_type = aceprop->aceType << 9;
-		}
-		else {
-			zacl->ats_acl.acl_entry[i].ae_entry_type = ACL_ENTRY_TYPE_ALLOW;
+		switch (aceprop->aceFlags) {
+			case SMB_ACE4_ACCESS_ALLOWED_ACE_TYPE:
+				zacl->ats_acl.acl_entry[i].ae_entry_type = ACL_ENTRY_TYPE_ALLOW;
+				break;
+			case SMB_ACE4_ACCESS_DENIED_ACE_TYPE:
+				zacl->ats_acl.acl_entry[i].ae_entry_type = ACL_ENTRY_TYPE_DENY;
+				break;
+			case SMB_ACE4_SYSTEM_AUDIT_ACE_TYPE:
+				zacl->ats_acl.acl_entry[i].ae_entry_type = ACL_ENTRY_TYPE_ALARM;
+				break;
+			case SMB_ACE4_SYSTEM_ALARM_ACE_TYPE:
+				zacl->ats_acl.acl_entry[i].ae_entry_type = ACL_ENTRY_TYPE_AUDIT;
+				break;
+			default:
+				smb_panic("zfs_process_smbacl: aceType is invalid");
 		}
 		if (aceprop->aceMask & SMB_ACE4_EXECUTE) {
 			zacl->ats_acl.acl_entry[i].ae_perm	|= ACL_EXECUTE; //0x0001 (doesn't map cleanly)	
